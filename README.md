@@ -5,7 +5,7 @@
 #### vLLM installation
 
 We use vLLM as a real inference system and modified it to take the schedules generated outside vLLM.
-We recommend you to run InferMax using a docker (see [here](https://docs.vllm.ai/en/v0.6.3/getting_started/installation.html))
+We recommend running InferMax with Docker (see [here](https://docs.vllm.ai/en/v0.6.3/getting_started/installation.html))
 
 ```
 git clone ...
@@ -15,7 +15,7 @@ pip install -e .
 
 #### InferMax installation
 
-We use a simulation-based framework, Vidur, to implement schedulers and embed our cost models.
+We extend a simulation-based framework, Vidur, to implement our schedulers and embed our cost models.
 
 ```
 git clone ...
