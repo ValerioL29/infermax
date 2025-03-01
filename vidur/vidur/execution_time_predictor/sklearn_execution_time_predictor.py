@@ -23,12 +23,13 @@ from vidur.execution_time_predictor.base_execution_time_predictor import (
     BaseExecutionTimePredictor,
 )
 from vidur.logger import init_logger
-
+import os
 logger = init_logger(__name__)
 
-model_7B = True
 
-if model_7B:
+model_size = os.getenv("MODEL_SIZE", "7B")
+
+if model_size == "7B":
     # prefill-attn from self
     a_p_dict = {0: 1.6773e-07}
     b_p_dict = {0: 0.0926} # decrease to match vllm and sarathi?

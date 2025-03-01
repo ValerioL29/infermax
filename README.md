@@ -28,6 +28,7 @@ First, run Vidur to simulate the scheduler for a given workload.
 Read the scripts, `vidur/run_splitwise*.sh` to see how to run Vidur for different workloads and schedulers.
 
 ```
+export MODEL_SIZE=7B # If you want to run the Llama 3 7B model, set this to 70B
 cd vidur
 bash run_exp_splitwise_test_sortI_histogram.sh # run our new scheduler
 ```
