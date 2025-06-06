@@ -37,5 +37,5 @@ python -m vidur.main --replica_config_model_name meta-llama/Meta-Llama-3-70B \
     --metrics_config_keep_individual_batch_metrics \
     --no-metrics_config_store_plots \
     --no-metrics_config_enable_chrome_trace \
-    --no-metrics_config_store_schedule \
+    --metrics_config_store_schedule \
     --metrics_config_save_table_to_wandb

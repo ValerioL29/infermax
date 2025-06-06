@@ -48,7 +48,7 @@ python3 run_vllm.py --vidur \
     --max-num-batched-tokens 16384 \
     --max-num-seqs 1024 \
     --disable-async-output-proc \
-    --schedule ${path/to/schedule.pkl}
+    --schedule /home/jli/Workspaces/infermax/vidur/simulator_output/2025-06-06_16-47-58-823872/schedule.pkl
 ```
 
 As a result, you will get a file ` path/to/schedule.pkl.vllm.json` that contains the execution results (e.g., batch time, model forward time per batch, etc.)

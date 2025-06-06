@@ -1,0 +1,6 @@
+ddsketch
+fasteners
+plotly
+scikit-learn
+wandb
+xformers == 0.0.27.post2
