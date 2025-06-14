@@ -7,6 +7,13 @@ C=16384
 
 M=100000
 
+mode=${1:-single}
+if [ "$mode" = "dual" ]; then
+    ds_flag="--test_scheduler_config_dual_schedulers"
+else
+    ds_flag=""
+fi
+
 python -m vidur.main --replica_config_model_name meta-llama/Meta-Llama-3-70B \
     --replica_config_num_pipeline_stages 1 \
     --replica_config_tensor_parallel_size 4 \
@@ -37,4 +44,5 @@ python -m vidur.main --replica_config_model_name meta-llama/Meta-Llama-3-70B \
     --no-metrics_config_store_plots \
     --no-metrics_config_enable_chrome_trace \
     --metrics_config_store_schedule \
-    --metrics_config_save_table_to_wandb
+    --metrics_config_save_table_to_wandb \
+    $ds_flag

@@ -10,10 +10,11 @@ logger = init_logger(__name__)
 
 
 class ReplicaScheduleEvent(BaseEvent):
-    def __init__(self, time: float, replica_id: int):
+    def __init__(self, time: float, replica_scheduler):
         super().__init__(time, EventType.REPLICA_SCHEDULE)
 
-        self._replica_id = replica_id
+        self._replica_scheduler = replica_scheduler
+        self._replica_id = replica_scheduler.replica_id
 
         self._batches = []
 
@@ -22,7 +23,7 @@ class ReplicaScheduleEvent(BaseEvent):
     ) -> List[BaseEvent]:
         from vidur.events.batch_stage_arrival_event import BatchStageArrivalEvent
 
-        replica_scheduler = scheduler.get_replica_scheduler(self._replica_id)
+        replica_scheduler = self._replica_scheduler
         self._batches = replica_scheduler.on_schedule()
 
         if not self._batches:

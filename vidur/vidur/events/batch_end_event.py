@@ -1,6 +1,6 @@
 from typing import List
 
-from vidur.entities import Batch
+from vidur.entities import Batch, Request
 from vidur.events import BaseEvent
 from vidur.logger import init_logger
 from vidur.metrics import MetricsStore
@@ -23,7 +23,7 @@ class BatchEndEvent(BaseEvent):
         from vidur.events.replica_schedule_event import ReplicaScheduleEvent
 
         self._batch.on_batch_end(self.time)
-        replica_scheduler = scheduler.get_replica_scheduler(self._replica_id)
+        replica_scheduler = self._batch.scheduler
         replica_scheduler.on_batch_end(self._batch)
 
         memory_usage_percent = replica_scheduler.memory_usage_percent
@@ -33,7 +33,25 @@ class BatchEndEvent(BaseEvent):
             replica_scheduler
         )
 
-        return [ReplicaScheduleEvent(self.time, self._replica_id)]
+        events = [ReplicaScheduleEvent(self.time, replica_scheduler)]
+
+        if scheduler.config.cluster_config.replica_scheduler_config.dual_schedulers:
+            for req in getattr(replica_scheduler, "handoff_requests", []):
+                decode_request = Request(
+                    arrived_at=self.time,
+                    num_prefill_tokens=1,
+                    num_decode_tokens=req.original_num_decode_tokens - 1,
+                    num_processed_tokens=req.num_prefill_tokens,
+                    request_id=req.id,
+                    original_num_prefill_tokens=req.original_num_prefill_tokens,
+                    original_num_decode_tokens=req.original_num_decode_tokens,
+                )
+                decode_request._is_prefill_complete = True
+                ds = scheduler.get_decode_scheduler(self._replica_id)
+                ds.add_request(decode_request)
+                events.append(ReplicaScheduleEvent(self.time, ds))
+
+        return events
 
     def to_dict(self):
         return {
