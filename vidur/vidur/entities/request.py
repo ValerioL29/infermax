@@ -32,8 +32,11 @@ class Request(BaseEntity):
         num_prefill_tokens: int,
         num_decode_tokens: int,
         num_processed_tokens: int = 0,
+        request_id: int = None,
+        original_num_prefill_tokens: int = None,
+        original_num_decode_tokens: int = None,
     ):
-        self._id = Request.generate_id()
+        self._id = request_id if request_id is not None else Request.generate_id()
         self._arrived_at = arrived_at
         self._num_prefill_tokens = num_prefill_tokens
         self._num_decode_tokens = num_decode_tokens
@@ -41,6 +44,16 @@ class Request(BaseEntity):
 
         self._initial_num_decode_tokens = num_decode_tokens
         self._initial_num_prefill_tokens = num_prefill_tokens
+        self._original_num_prefill_tokens = (
+            original_num_prefill_tokens
+            if original_num_prefill_tokens is not None
+            else num_prefill_tokens
+        )
+        self._original_num_decode_tokens = (
+            original_num_decode_tokens
+            if original_num_decode_tokens is not None
+            else num_decode_tokens
+        )
 
         self._scheduled_at = 0
         self._execution_time = 0
@@ -215,6 +228,14 @@ class Request(BaseEntity):
     @property
     def num_processed_tokens(self) -> int:
         return self._num_processed_tokens
+
+    @property
+    def original_num_prefill_tokens(self) -> int:
+        return self._original_num_prefill_tokens
+
+    @property
+    def original_num_decode_tokens(self) -> int:
+        return self._original_num_decode_tokens
 
     @property
     def total_tokens(self) -> int:
