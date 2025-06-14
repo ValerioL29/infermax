@@ -32,9 +32,14 @@ class Batch(BaseEntity):
         replica_id: int,
         requests: List[Request],
         num_tokens: List[int],
+        scheduler=None,
+        is_decode: bool = False,
     ) -> None:
         self._id = Batch.generate_id()
         self._replica_id = replica_id
+
+        self._scheduler = scheduler
+        self._is_decode = is_decode
 
         self._requests = requests
         self._num_tokens = num_tokens
@@ -87,6 +92,14 @@ class Batch(BaseEntity):
                 r.num_processed_tokens for r in self.requests if r.is_prefill_complete
             ]
         )
+
+    @property
+    def scheduler(self):
+        return self._scheduler
+
+    @property
+    def is_decode(self) -> bool:
+        return self._is_decode
 
     @property
     def num_prefill_requests(self) -> int:

@@ -304,6 +304,11 @@ class BaseReplicaSchedulerConfig(BasePolyConfig):
         metadata={"help": "Fraction or number of blocks to partially evict."},
     )
 
+    dual_schedulers: bool = field(
+        default=False,
+        metadata={"help": "Use separate prefill and decode schedulers."},
+    )
+
 
 @dataclass
 class VllmSchedulerConfig(BaseReplicaSchedulerConfig):
