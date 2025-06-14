@@ -29,8 +29,8 @@ class RequestArrivalEvent(BaseEvent):
             self._request._num_decode_tokens = 1
             self._request._num_processed_tokens = 0
 
-        ps = scheduler.get_replica_scheduler(0)
-        ps.add_request(self._request)
+        scheduler.add_request(self._request)
+
         metrics_store.on_request_arrival(self.time, self._request)
         return [ReplicaScheduleEvent(self.time, ps)]
 
