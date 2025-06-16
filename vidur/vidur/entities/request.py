@@ -327,15 +327,16 @@ class Request(BaseEntity):
         #    print('process 331', self._num_prefill_tokens, self._num_decode_tokens, self._num_processed_tokens)
 
         #XXX for TPOT
-        if self._is_prefill_complete:
-            self._TPOT.append(time - prev_latest)
+        if self._is_prefill_complete and time > self._prefill_completed_at:
+            self._TPOT.append(float(time - prev_latest))
             self._num_generated_tokens += 1
+            #print('add TPOT for R', self._id, self._TPOT[-1])
 
         if self._completed:
             return
 
         # TODO: consider overloading, that not all processed tokens may be added to memory
-        # case 1: if prefill = 300, overload 200, m = 100, then processed = 300 + 1 = 301 here, 
+        # case 1: if prefill = 300, overload 200, m = 100, then processed = 300 + 1 = 301 here,
         if self._num_overloaded_tokens > 0:
             prev_prefill_tokens = self._num_prefill_tokens
             prev_processed_tokens = self._num_processed_tokens
@@ -356,9 +357,9 @@ class Request(BaseEntity):
                 if self._num_processed_tokens < self._num_prefill_tokens:
                     self._is_prefill_complete = False
 
-            print('[on batch end] request', self.id, 'overloaded', self._num_overloaded_tokens, 'phase was', phase, 
-                'prefill', prev_prefill_tokens, '->', self._num_prefill_tokens, 
-                'decode', prev_decode_tokens, '->', self._num_decode_tokens, 
+            print('[on batch end] request', self.id, 'overloaded', self._num_overloaded_tokens, 'phase was', phase,
+                'prefill', prev_prefill_tokens, '->', self._num_prefill_tokens,
+                'decode', prev_decode_tokens, '->', self._num_decode_tokens,
                 'processed', prev_processed_tokens, '->', self._num_processed_tokens)
 
     def on_batch_stage_schedule(
@@ -436,12 +437,12 @@ class Request(BaseEntity):
 
         if num_remaining_tokens > 0:
             pass
-            print('[restart partial] request', self.id, 'remaining', num_remaining_tokens, 
-                'prefill', prev_prefill_tokens, '->', self._num_prefill_tokens, 
-                'decode', prev_decode_tokens, '->', self._num_decode_tokens, 
+            print('[restart partial] request', self.id, 'remaining', num_remaining_tokens,
+                'prefill', prev_prefill_tokens, '->', self._num_prefill_tokens,
+                'decode', prev_decode_tokens, '->', self._num_decode_tokens,
                 'processed', prev_processed_tokens, '->', self._num_processed_tokens,
                 'is prefill complete', self._is_prefill_complete)
-            
+
 
         self._num_restarts += 1
         #if self._id == 24:

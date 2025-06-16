@@ -263,14 +263,30 @@ class MetricsStore:
     ):
         os.makedirs(base_path, exist_ok=True)
 
-        merged_df = reduce(
-            lambda left, right: pd.merge(left, right, on=[key_to_join], how="outer"),
-            [dataseries._to_df() for dataseries in dataseries_list],
-        )
-        merged_df.to_csv(f"{base_path}/{file_name}.csv", index=False)
-        if wandb.run and self._config.save_table_to_wandb:
-            wand_table = wandb.Table(dataframe=merged_df)
-            wandb.log({f"{file_name}_table": wand_table}, step=0)
+        for dataseries in dataseries_list:
+            print('dataseries')
+            print(dataseries._to_df())
+            print('key_to_join')
+            print(key_to_join)
+
+        # id: 0, ..., N-1
+        if max(dataseries_list[0]._to_df()[key_to_join]) + 1 == len(dataseries_list[0]):
+            print('merged')
+            merged_df = reduce(
+                lambda left, right: pd.merge(left, right, on=[key_to_join], how="outer"),
+                [dataseries._to_df() for dataseries in dataseries_list],
+            )
+            merged_df.to_csv(f"{base_path}/{file_name}.csv", index=False)
+            if wandb.run and self._config.save_table_to_wandb:
+                wand_table = wandb.Table(dataframe=merged_df)
+                wandb.log({f"{file_name}_table": wand_table}, step=0)
+        else:
+            print('not merged')
+            for dataseries in dataseries_list:
+                df = dataseries._to_df()
+                col_name = df.columns.values.tolist()[-1]
+                print('col_name', col_name)
+                df.to_csv(f'{base_path}/{file_name}_{col_name}.csv')
 
     def _store_bar_plot(
         self,
@@ -600,18 +616,20 @@ class MetricsStore:
             / request.num_decode_tokens,
         )
         #XXX for TPOT
-        if False:
+        if True:
             import numpy as np
-            print('put TPOT', len(request.TPOT), request.TPOT)
-            assert len(request.TPOT) == request.num_decode_tokens, f'{len(request.TPOT)} != {request.num_decode_tokens}'
+            #print('put TPOT', len(request.TPOT), request.TPOT)
+            assert len(request.TPOT) == 0 or len(request.TPOT) == request._initial_num_decode_tokens - 1, f'{len(request.TPOT)} != {request._initial_num_decode_tokens} - 1'
             assert request.completed_at == request.latest_iteration_completed_at, f'{request.completed_at} != {request.latest_iteration_completed_at}'
-            assert sum(request.TPOT) == (request.completed_at - request.prefill_completed_at), f'{sum(request.TPOT)} != {request.completed_at - request.prefill_completed_at}'
+            #assert sum(request.TPOT) == (request.completed_at - request.prefill_completed_at), f'{sum(request.TPOT)} != {request.completed_at - request.prefill_completed_at}'
             self._request_metrics_time_distributions[
                 RequestMetricsTimeDistributions.TPOT
             ].put(
                 request.id,
                 request.TPOT
             )
+
+        self._request_metrics_time_distributions[RequestMetricsTimeDistributions.ARRIVED_AT].put(request.id, request.arrived_at)
 
         self._request_metrics_histogram[
             RequestMetricsHistogram.REQUEST_NUM_RESTARTS

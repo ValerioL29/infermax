@@ -27,7 +27,7 @@ import os
 logger = init_logger(__name__)
 
 
-model_size = os.getenv("MODEL_SIZE", "7B")
+model_size = "70B" #os.getenv("MODEL_SIZE", "7B")
 
 if model_size == "7B":
     # prefill-attn from self

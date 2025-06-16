@@ -62,8 +62,8 @@ class TraceReplayRequestGenerator(BaseRequestGenerator):
         )
 
         # rescale the time to change QPS
-        self.trace_df["arrived_at"] = (
-            self.trace_df["arrived_at"] * config.time_scale_factor
+        self.trace_df["arrival_time"] = (
+            self.trace_df["arrival_time"] * config.time_scale_factor
         )
 
         logger.info(
@@ -82,7 +82,7 @@ class TraceReplayRequestGenerator(BaseRequestGenerator):
 
         for _, row in self.trace_df.iterrows():
             request = Request(
-                arrived_at=row["arrived_at"],
+                arrived_at=row["arrival_time"],
                 num_prefill_tokens=row["num_prefill_tokens"],
                 num_decode_tokens=row["num_decode_tokens"],
             )

@@ -19,7 +19,7 @@ class RequestArrivalEvent(BaseEvent):
     def handle_event(
         self, scheduler: BaseGlobalScheduler, metrics_store: MetricsStore
     ) -> List[BaseEvent]:
-        from vidur.events.replica_schedule_event import ReplicaScheduleEvent
+        from vidur.events.global_schedule_event import GlobalScheduleEvent
 
         logger.debug(f"Request: {self._request.id} arrived at {self.time}")
 
@@ -30,9 +30,8 @@ class RequestArrivalEvent(BaseEvent):
             self._request._num_processed_tokens = 0
 
         scheduler.add_request(self._request)
-
         metrics_store.on_request_arrival(self.time, self._request)
-        return [ReplicaScheduleEvent(self.time, ps)]
+        return [GlobalScheduleEvent(self.time)]
 
     def to_dict(self) -> dict:
         return {

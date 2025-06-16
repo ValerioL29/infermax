@@ -39,17 +39,25 @@ class BatchEndEvent(BaseEvent):
             for req in getattr(replica_scheduler, "handoff_requests", []):
                 decode_request = Request(
                     arrived_at=self.time,
-                    num_prefill_tokens=1,
+                    #num_prefill_tokens=1,
+                    num_prefill_tokens=req.num_prefill_tokens, #XXX not sure if this should be 1
                     num_decode_tokens=req.original_num_decode_tokens - 1,
-                    num_processed_tokens=req.num_prefill_tokens,
+                    num_processed_tokens=req.num_prefill_tokens + 1,
                     request_id=req.id,
                     original_num_prefill_tokens=req.original_num_prefill_tokens,
                     original_num_decode_tokens=req.original_num_decode_tokens,
                 )
+                decode_request._prefill_completed_at = req._prefill_completed_at
+                decode_request._latest_stage_scheduled_at = req._latest_stage_scheduled_at
+                decode_request._latest_stage_completed_at = req._latest_stage_completed_at
+                decode_request._latest_iteration_scheduled_at = req._latest_iteration_scheduled_at
+                decode_request._latest_iteration_completed_at = req._latest_iteration_completed_at
+                decode_request._preempted = True
                 decode_request._is_prefill_complete = True
                 ds = scheduler.get_decode_scheduler(self._replica_id)
                 ds.add_request(decode_request)
                 events.append(ReplicaScheduleEvent(self.time, ds))
+                #print('add D', req.id, 'at', self.time)
 
         return events
 
