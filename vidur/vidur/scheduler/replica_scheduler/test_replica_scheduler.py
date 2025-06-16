@@ -8,8 +8,12 @@ from typing import List
 
 
 class TestReplicaScheduler(BaseReplicaScheduler):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, is_decode_scheduler: bool = False, **kwargs):
         super().__init__(*args, **kwargs)
+
+        self._is_decode_scheduler = is_decode_scheduler
+        self._decode_scheduler = None
+        self.handoff_requests = []
 
         # sarathi config
         self._num_running_batches = 0
@@ -26,6 +30,9 @@ class TestReplicaScheduler(BaseReplicaScheduler):
         self.histogram = [[0,0] for i in range(100)]
         self.num_overloaded_tokens = 0
         self.overload_map = {}
+
+    def set_decode_scheduler(self, scheduler: "TestReplicaScheduler") -> None:
+        self._decode_scheduler = scheduler
 
     #XXX: not used
     def _calculate_num_required_blocks(self, requests: List[Request]) -> int:
@@ -178,11 +185,16 @@ class TestReplicaScheduler(BaseReplicaScheduler):
                     # num_remaining_tokens = avg_processed_tokens - request.num_processed_tokens #request.total_tokens - self.num_processed_tokens
                     # num_required_tokens = request.num_processed_tokens + num_remaining_tokens * 0.5  # request.num_prefill_tokens + request.num_decode_tokens # * 3 / 4
                     # num_required_tokens = max(request.num_prefill_tokens, num_required_tokens)
-                    num_required_tokens = request.num_prefill_tokens
+                    if self._is_decode_scheduler:
+                        num_required_tokens = max(request.num_processed_tokens, request.num_prefill_tokens)
+                    else:
+                        num_required_tokens = request.num_prefill_tokens
                     num_required_blocks = ceil(
                         num_required_tokens / self._config.block_size
                     )
             self.allocate(request.id, num_required_blocks)
+            if self._is_decode_scheduler and request.id == 18818:
+                print('allocate R first time', request.id, num_required_blocks)
             return
 
         if self._config.overload and request.id in self.overload_map:
@@ -230,6 +242,9 @@ class TestReplicaScheduler(BaseReplicaScheduler):
             self.allocate(request.id, num_required_blocks)
         else:
             self.allocate(request.id, 1)
+            #if self._is_decode_scheduler:
+            if self._is_decode_scheduler and request.id == 18818:
+                print('allocate R decode', request.id, 1)
 
     def free_overload(self, *request_ids: List[int]) -> None:
         for request_id in request_ids:
@@ -242,16 +257,23 @@ class TestReplicaScheduler(BaseReplicaScheduler):
     def on_batch_end(self, batch: Batch) -> None:
         self._num_running_batches -= 1
 
+        self.handoff_requests = []
+
         for request in batch.requests:
             if request.completed:
                 self.free(request.id)
                 self.free_overload(request.id)
-                #XXX: different from SARATHI
-                self.num_completed_requests += 1
-                self.num_processed_tokens += request.total_tokens
-                histogram_key = int(log2(request._initial_num_prefill_tokens)) # key = initial # prefill tokens
-                self.histogram[histogram_key][0] += 1 # count
-                self.histogram[histogram_key][1] += request.total_tokens # sum
+                if not self._is_decode_scheduler and self._decode_scheduler is not None:
+                    self.handoff_requests.append(request)
+                    if request.id == 18818:
+                        print('add handoff', request.id)
+                else:
+                    #XXX: different from SARATHI
+                    self.num_completed_requests += 1
+                    self.num_processed_tokens += request.total_tokens
+                    histogram_key = int(log2(request._initial_num_prefill_tokens)) # key = initial # prefill tokens
+                    self.histogram[histogram_key][0] += 1 # count
+                    self.histogram[histogram_key][1] += request.total_tokens # sum
             else:
                 self._preempted_requests.append(request)
 
@@ -329,6 +351,10 @@ class TestReplicaScheduler(BaseReplicaScheduler):
             next_num_tokens = self._get_request_next_num_tokens(
                 request, contains_prefill, num_batch_tokens
             )
+            if self._is_decode_scheduler:
+                assert next_num_tokens == 1
+                if request.id == 18818:
+                    print('tokens to process R', request.id, next_num_tokens)
 
             if next_num_tokens == 0:
                 #print('C_LIMIT', request._id)
@@ -377,7 +403,13 @@ class TestReplicaScheduler(BaseReplicaScheduler):
             self._preempted_requests = sorted(
                 self._preempted_requests, key=lambda req: req.arrived_at
             )
-            return Batch(self._replica_id, requests, num_tokens)
+            return Batch(
+                self._replica_id,
+                requests,
+                num_tokens,
+                scheduler=self,
+                is_decode=self._is_decode_scheduler,
+            )
 
         #XXX here, don't check _can_allocate_request as they have already been checked
 
@@ -454,7 +486,13 @@ class TestReplicaScheduler(BaseReplicaScheduler):
         if not requests:
             return
 
-        batch = Batch(self._replica_id, requests, num_tokens)
+        batch = Batch(
+            self._replica_id,
+            requests,
+            num_tokens,
+            scheduler=self,
+            is_decode=self._is_decode_scheduler,
+        )
         #print('BATCH', batch._id, [r.id for r in requests])
         return batch
 

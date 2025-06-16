@@ -12,6 +12,15 @@ cd vllm-scheduler
 pip install -e .
 ```
 
+#### Setting up a Python virtual environment
+
+Run the helper script `setup_venv.sh` to create a virtual environment and
+install the required packages:
+
+```
+./setup_venv.sh
+```
+
 #### InferMax installation
 
 We extend a simulation-based framework, Vidur, to implement our schedulers and embed our cost models.
@@ -19,7 +28,9 @@ We extend a simulation-based framework, Vidur, to implement our schedulers and e
 ```
 git clone ...
 cd vidur
-pip install -r requirements.txt
+# dependencies are installed by `setup_venv.sh`, but you can also run
+# the following inside the `vidur` directory:
+# pip install -r requirements.txt
 ```
 
 ## How to run?

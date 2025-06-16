@@ -304,6 +304,11 @@ class BaseReplicaSchedulerConfig(BasePolyConfig):
         metadata={"help": "Fraction or number of blocks to partially evict."},
     )
 
+    dual_schedulers: bool = field(
+        default=False,
+        metadata={"help": "Use separate prefill and decode schedulers."},
+    )
+
 
 @dataclass
 class VllmSchedulerConfig(BaseReplicaSchedulerConfig):
@@ -720,6 +725,18 @@ class RandomForrestExecutionTimePredictorConfig(BaseExecutionTimePredictorConfig
     @staticmethod
     def get_type():
         return ExecutionTimePredictorType.RANDOM_FORREST
+
+
+@dataclass
+class LLMViewerExecutionTimePredictorConfig(BaseExecutionTimePredictorConfig):
+    hardware: str = field(
+        default="A100",
+        metadata={"help": "Hardware name for LLM-Viewer."},
+    )
+
+    @staticmethod
+    def get_type():
+        return ExecutionTimePredictorType.LLM_VIEWER
 
 
 @dataclass

@@ -53,6 +53,7 @@ class RequestMetricsTimeDistributions(enum.Enum):
     )
     #XXX for TPOT
     TPOT = "TPOT"
+    ARRIVED_AT = "arrived_at"
 
 
 class TokenMetricsTimeDistribution(enum.Enum):

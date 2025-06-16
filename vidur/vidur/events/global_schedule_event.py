@@ -26,10 +26,11 @@ class GlobalScheduleEvent(BaseEvent):
 
         for replica_id, request in self._request_mapping:
             self._replica_set.add(replica_id)
-            scheduler.get_replica_scheduler(replica_id).add_request(request)
+            sched = scheduler.get_replica_scheduler(replica_id)
+            sched.add_request(request)
 
         return [
-            ReplicaScheduleEvent(self.time, replica_id)
+            ReplicaScheduleEvent(self.time, scheduler.get_replica_scheduler(replica_id))
             for replica_id in self._replica_set
         ]
 
