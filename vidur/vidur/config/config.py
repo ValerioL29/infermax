@@ -728,6 +728,18 @@ class RandomForrestExecutionTimePredictorConfig(BaseExecutionTimePredictorConfig
 
 
 @dataclass
+class LLMViewerExecutionTimePredictorConfig(BaseExecutionTimePredictorConfig):
+    hardware: str = field(
+        default="A100",
+        metadata={"help": "Hardware name for LLM-Viewer."},
+    )
+
+    @staticmethod
+    def get_type():
+        return ExecutionTimePredictorType.LLM_VIEWER
+
+
+@dataclass
 class ClusterConfig:
     num_replicas: int = field(
         default=1,
