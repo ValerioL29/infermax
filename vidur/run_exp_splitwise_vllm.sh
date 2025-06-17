@@ -8,7 +8,7 @@ C=16384
 M=100000
 
 # python -m vidur.main \
-#     --replica_config_model_name meta-llama/Meta-Llama-3-7B \
+#     --replica_config_model_name meta-llama/Meta-Llama-3-8B \
 #     --replica_config_num_pipeline_stages 1 \
 #     --replica_config_tensor_parallel_size 4 \
 #     --replica_scheduler_config_type vllm \
@@ -40,7 +40,7 @@ M=100000
 #     --metrics_config_save_table_to_wandb
 
 python -m vidur.main \
-    --replica_config_model_name meta-llama/Meta-Llama-3-7B \
+    --replica_config_model_name meta-llama/Meta-Llama-3-8B \
     --replica_scheduler_config_type vllm \
     --vllm_scheduler_config_block_size $bsize \
     --vllm_scheduler_config_batch_size_cap $max_B \

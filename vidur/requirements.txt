@@ -3,4 +3,8 @@ pandas
 scikit-learn
 matplotlib
 torch
+plotly
 pytest
+wandb
+ddsketch
+fasteners
