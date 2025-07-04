@@ -1452,12 +1452,12 @@ class LLMEngine:
             outputs = self.model_executor.execute_model(
                 execute_model_req=execute_model_req)
 
-            # print('model_outputs')
-            # print(outputs)
             pre_schedule = PrecomputedSchedule()
-            pre_schedule.model_execution_time.append(time.time()-start_time)
-            pre_schedule.gpu_cache_usage.append(self.scheduler[0].block_manager.get_num_free_gpu_blocks())
-
+            pre_schedule.model_execution_time.append(time.time() - start_time)
+            pre_schedule.gpu_cache_usage.append(
+                self.scheduler[virtual_engine].block_manager.num_total_gpu_blocks -
+                self.scheduler[virtual_engine].block_manager.get_num_free_gpu_blocks()
+            )
 
             # We need to do this here so that last step's sampled_token_ids can
             # be passed to the next iteration for PP.

@@ -8,4 +8,4 @@ except Exception as e:
                   stacklevel=2)
 
     __version__ = "dev"
-    __version_tuple__ = (0, 0, __version__)
+    __version_tuple__ = (1, 0, 0, __version__)

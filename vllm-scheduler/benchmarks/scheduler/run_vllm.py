@@ -4,19 +4,12 @@ import dataclasses
 import json
 import random
 import time
-from typing import List, Optional, Tuple
+from typing import List, Tuple
 
-import torch
-import uvloop
-from tqdm import tqdm
-from transformers import (AutoModelForCausalLM, AutoTokenizer,
-                          PreTrainedTokenizerBase)
+from transformers import AutoTokenizer
 
 from vllm.engine.arg_utils import AsyncEngineArgs, EngineArgs
-from vllm.entrypoints.openai.api_server import (
-    build_async_engine_client_from_engine_args)
-from vllm.sampling_params import BeamSearchParams
-from vllm.utils import FlexibleArgumentParser, merge_async_iterators
+from vllm.utils import FlexibleArgumentParser
 from vllm.core.scheduler import PrecomputedSchedule
 
 from generate_precomputed_schedule import generate_precomputed_schedule, generate_precomputed_schedule_from_vidur, generate_synthetic_schedule

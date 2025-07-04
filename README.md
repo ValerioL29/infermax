@@ -52,14 +52,16 @@ If you want to enable the chunked prefill, add `--enable-chunked-prefill` to the
 
 ```
 cd vllm-scheduler/benchmarks/scheduler
-python3 run_vllm.py --vidur \
+python3 run_vllm.py \
+    --vidur \
     --tensor-parallel-size 4 \
-    --gpu-memory-utilization 0.85 \
+    --gpu-memory-utilization 1.0 \
+    --num-gpu-blocks-override 6250 \
     --model meta-llama/Meta-Llama-3-70B \
     --max-num-batched-tokens 16384 \
-    --max-num-seqs 1024 \
+    --max-num-seqs 4096 \
     --disable-async-output-proc \
-    --schedule ${path/to/schedule.pkl}
+    --schedule /data/jiacheng/vcostlm-data/schedules/sarathi.pkl
 ```
 
 As a result, you will get a file ` path/to/schedule.pkl.vllm.json` that contains the execution results (e.g., batch time, model forward time per batch, etc.)

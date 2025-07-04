@@ -15,7 +15,7 @@ from vllm.lora.request import LoRARequest
 from vllm.prompt_adapter.request import PromptAdapterRequest
 from vllm.sequence import (Sequence, SequenceData, SequenceGroup,
                            SequenceGroupMetadata, SequenceGroupMetadataDelta,
-                           SequenceStatus, CompletionSequenceGroupOutput)
+                           SequenceStatus)
 from vllm.utils import Device, PyObjectCache
 
 logger = init_logger(__name__)
@@ -425,6 +425,18 @@ class Scheduler:
         # for processing and deallocation by the free_finished_seq_groups()
         self._async_stopped: List[SequenceGroup] = []
 
+        # Use infermax schedule
+        self.use_infermax_schedule = True
+
+        # For SRF preemption
+        self.use_srf_preemption = False
+        
+        # For EF preemption
+        self.use_ef_preemption = False
+
+        # Preemption counter
+        self.preemption_count = 0
+
 
     @property
     def next_cache_id(self):
@@ -438,6 +450,18 @@ class Scheduler:
     def num_decoding_tokens_per_seq(self) -> int:
         """The number of new tokens."""
         return 1
+
+    def set_use_srf_preemption(self, use_srf_preemption: bool) -> None:
+        self.use_srf_preemption = use_srf_preemption
+        logger.info(f"Using SRF preemption: {use_srf_preemption}")
+    
+    def set_use_ef_preemption(self, use_ef_preemption: bool) -> None:
+        self.use_ef_preemption = use_ef_preemption
+        logger.info(f"Using EF preemption: {use_ef_preemption}")
+
+    def set_use_infermax_schedule(self, use_infermax_schedule: bool) -> None:
+        self.use_infermax_schedule = use_infermax_schedule
+        logger.info(f"Using infermax schedule: {use_infermax_schedule}")
 
     def add_seq_group(self, seq_group: SequenceGroup) -> None:
         # Add sequence groups to the waiting queue.
@@ -723,8 +747,19 @@ class Scheduler:
                 # Determine victim sequence
                 cont_loop = True
                 if running_queue:
-                    # Preempt the lowest-priority sequence group.
-                    victim_seq_group = running_queue.pop()
+                    # SRF preemption
+                    if self.use_srf_preemption:
+                        victim_seq_group = min(
+                            running_queue,
+                            key=lambda x: x.seqs[0].data.get_num_computed_tokens(),
+                        )
+                        running_queue.remove(victim_seq_group)
+                    # NRF preemption
+                    else:
+                        # Preempt the lowest-priority sequence group.
+                        victim_seq_group = running_queue.pop()
+                    # Count preemption
+                    self.preemption_count += 1
                 else:
                     # No other sequence group can be preempted.
                     # Preempt the current sequence group.
@@ -1052,8 +1087,20 @@ class Scheduler:
                                                 num_new_seqs=num_new_seqs)):
                     break
 
-                #Adjust budget to remove the victim sequence group
-                vseq_group = running_queue.pop()
+                # SRF preemption
+                if self.use_srf_preemption:
+                    vseq_group = min(
+                        running_queue,
+                        key=lambda x: x.seqs[0].data.get_num_computed_tokens(),
+                    )
+                    running_queue.remove(vseq_group)
+                # NRF preemption
+                else:
+                    #Adjust budget to remove the victim sequence group
+                    vseq_group = running_queue.pop()
+                # Count preemption
+                self.preemption_count += 1
+
                 num_running_tokens = self._get_num_new_tokens(
                     vseq_group, SequenceStatus.RUNNING, False, budget)
                 budget.subtract_num_batched_tokens(vseq_group.request_id,
@@ -1340,17 +1387,16 @@ class Scheduler:
             num_lookahead_slots=self._get_num_lookahead_slots(
                 is_prefill=True, enable_chunking=enable_chunking))
 
-
-
     def _schedule_infermax(self, enable_chunking) -> SchedulerOutputs:
-
-        #print('batch id: ', self.batch_id)
-
         self.precomputed_schedule.attn_profile_log.append([])
         self.precomputed_schedule.attn_time.append(0)
         self.precomputed_schedule.all_reduce_time.append(0)
         self.precomputed_schedule.batch_start_time.append(time.time())
-        #self.precomputed_schedule.gpu_cache_usage.append(self.block_manager.get_num_free_gpu_blocks())
+        # self.precomputed_schedule.gpu_cache_usage.append(
+        #     self.block_manager.num_total_gpu_blocks - 
+        #     self.block_manager.get_num_free_gpu_blocks()
+        # )
+
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1425,6 +1471,16 @@ class Scheduler:
         decodes. If there's a pressure on GPU memory, decode requests can
         be swapped or preempted.
         """
+        # Precomputed schedule metrics
+        self.precomputed_schedule.attn_profile_log.append([])
+        self.precomputed_schedule.attn_time.append(0)
+        self.precomputed_schedule.all_reduce_time.append(0)
+        self.precomputed_schedule.batch_start_time.append(time.time())
+        # self.precomputed_schedule.gpu_cache_usage.append(
+        #     self.block_manager.num_total_gpu_blocks - 
+        #     self.block_manager.get_num_free_gpu_blocks()
+        # )
+
         # Include running requests to the budget.
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
@@ -1535,6 +1591,16 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
+        # Precomputed schedule metrics
+        self.precomputed_schedule.attn_profile_log.append([])
+        self.precomputed_schedule.attn_time.append(0)
+        self.precomputed_schedule.all_reduce_time.append(0)
+        self.precomputed_schedule.batch_start_time.append(time.time())
+        # self.precomputed_schedule.gpu_cache_usage.append(
+        #     self.block_manager.num_total_gpu_blocks - 
+        #     self.block_manager.get_num_free_gpu_blocks()
+        # )
+
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1607,11 +1673,13 @@ class Scheduler:
 
     def _schedule(self) -> SchedulerOutputs:
         """Schedule queued requests."""
-        return self._schedule_infermax(self.scheduler_config.chunked_prefill_enabled)
-        # if self.scheduler_config.chunked_prefill_enabled:
-        #     return self._schedule_chunked_prefill()
-        # else:
-        #     return self._schedule_default()
+        if self.use_infermax_schedule:
+            return self._schedule_infermax(self.scheduler_config.chunked_prefill_enabled)
+        else:
+            if self.scheduler_config.chunked_prefill_enabled:
+                return self._schedule_chunked_prefill()
+            else:
+                return self._schedule_default()
 
     def _can_append_slots(self, seq_group: SequenceGroup,
                           enable_chunking: bool) -> bool:

@@ -1,9 +1,11 @@
-import pickle
-import sys 
-import json
 import math
-def read_pkl_file(file_path):
-    with open(file_path, 'rb') as f:
+import json
+import pickle
+
+import pandas as pd
+
+def read_pkl_file(file_path) -> dict:
+    with open(str(file_path), "rb") as f:
         data = pickle.load(f)
     return data
 
@@ -48,30 +50,13 @@ def generate_precomputed_schedule(fpath, k=1):
 
 # I : 2, O: 2
 
-def validate(item, request_id, max_batch_id, schedule, I, O):
+def validate(request_id, max_batch_id, schedule, I, O):
     num_processed_tokens = 0
-
-    # if request_id == 24:
-    #     c_list = []
-    #     e_list = []
-    #     for batch_id in range(max_batch_id):
-    #         c = schedule['c'][batch_id].get(request_id, 0)
-    #         if  c > 0:
-    #             c_list.append([batch_id, c])
-            
-    #         if request_id in schedule['evicted'][batch_id]:
-    #             assert item['e'][batch_id][request_id] > 0
-    #             e_list.append(batch_id)
-
-
-    #     print(c_list)
-    #     print(e_list)
 
     for batch_id in range(max_batch_id):
         
         if request_id in schedule['evicted'][batch_id]:
             num_processed_tokens = 0
-            #if (request_id == 24): print('evict')
             continue
 
         num_processed_tokens += schedule['c'][batch_id].get(request_id, 0)
@@ -82,7 +67,7 @@ def validate(item, request_id, max_batch_id, schedule, I, O):
     assert num_processed_tokens == (I + O - 1), (batch_id, request_id, num_processed_tokens, I + O - 1)
 
 def generate_precomputed_schedule_from_vidur(fpath):
-    print(fpath)
+    print(f"Schedule path: {fpath}")
     item = read_pkl_file(fpath)
     max_batch_id = max(list(item['c'].keys())) + 1
     schedule = {
@@ -102,18 +87,19 @@ def generate_precomputed_schedule_from_vidur(fpath):
     for batch_id, dic in item['p'].items():
         for k, v in dic.items():
             if v != 0: schedule['p'][batch_id].add(k)    
-    # for i in range(B):
-    #     validate(item, i, max_batch_id, schedule, I, O)
-    #     schedule['requests'].append([I,O])
 
-    f = open(fpath.replace('schedule.pkl', 'request_metrics.csv'))
-    lines = f.readlines()
-    for i, line in enumerate(lines[1:]):
-        es = line.strip().split(',')
-        I_,O_ = int(es[-4]),int(es[-3])
-        validate(item, i, max_batch_id, schedule, I_, O_)
-        schedule['requests'].append([I_,O_])
-    
+    # f = open(fpath.replace('schedule.pkl', 'request_metrics.csv'))
+    # lines = f.readlines()
+    # for i, line in enumerate(lines[1:]):
+    #     es = line.strip().split(',')
+    #     I_,O_ = int(es[-4]),int(es[-3])
+    #     validate(item, i, max_batch_id, schedule, I_, O_)
+    #     schedule['requests'].append([I_,O_])
+    requests = pd.read_csv("../../../vidur/data/processed_traces/splitwise_conv.csv").to_dict(orient="records")
+    schedule["requests"] = [
+        validate(i, max_batch_id, schedule, req_dict["num_prefill_tokens"], req_dict["num_decode_tokens"])
+        for i, req_dict in enumerate(requests)
+    ]
     
     print(max_batch_id)
     print(max(list(item['last_batch_id'].values())))
@@ -146,14 +132,11 @@ def generate_synthetic_schedule(I, O, B, chunk_size):
             batch_id += 1
 
     for i in range(B):
-        validate(None, i, max_batch_id, schedule, I, O)
+        validate(i, max_batch_id, schedule, I, O)
         schedule['requests'].append([I, O])
-    # print(schedule)
-
-    #schedule = {'c': [{0: 1}, {0: 1, 1: 1, 2: 1}, {1: 1, 2: 1}], 'p': [set([0]), set([0, 1, 2]), set([1,2])], 'evicted': [set(), set(), set()], 'requests': [[2, 1], [2, 1], [2,1]]}
+    
     schedule['chunked_prefill'] = chunk_size < I     
-
-
+    
     return schedule
     
 
