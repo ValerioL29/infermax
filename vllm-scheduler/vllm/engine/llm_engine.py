@@ -480,6 +480,9 @@ class LLMEngine:
 
         self.seq_id_to_seq_group: Dict[str, SequenceGroupBase] = {}
 
+        # Precomputed schedule metrics
+        self.precomputed_schedule = PrecomputedSchedule()
+
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
 
@@ -658,8 +661,17 @@ class LLMEngine:
         seq_id = next(self.seq_counter)
         eos_token_id = self.input_preprocessor.get_eos_token_id(lora_request)
 
-        seq = Sequence(seq_id, processed_inputs, block_size, eos_token_id,
-                       lora_request, prompt_adapter_request)
+        prompt_len = len(processed_inputs["prompt_token_ids"])
+        seq = Sequence(
+            seq_id,
+            processed_inputs,
+            block_size,
+            eos_token_id,
+            lora_request,
+            prompt_adapter_request,
+            prompt_len=prompt_len,
+            max_tokens=params.max_tokens,
+        )
 
         encoder_seq = None
         if 'encoder_prompt_token_ids' in processed_inputs:
@@ -682,7 +694,10 @@ class LLMEngine:
                 trace_headers=trace_headers,
                 prompt_adapter_request=prompt_adapter_request,
                 encoder_seq=encoder_seq,
-                priority=priority)
+                priority=priority,
+                prompt_len=prompt_len,
+                max_tokens=params.max_tokens,
+            )
         elif isinstance(params, PoolingParams):
             seq_group = self._create_sequence_group_with_pooling(
                 request_id,
@@ -867,6 +882,8 @@ class LLMEngine:
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         encoder_seq: Optional[Sequence] = None,
         priority: int = 0,
+        prompt_len: int = 0,
+        max_tokens: int = 0,
     ) -> SequenceGroup:
         """Creates a SequenceGroup with SamplingParams."""
         max_logprobs = self.get_model_config().max_logprobs
@@ -897,7 +914,10 @@ class LLMEngine:
             trace_headers=trace_headers,
             prompt_adapter_request=prompt_adapter_request,
             encoder_seq=encoder_seq,
-            priority=priority)
+            priority=priority,
+            max_tokens=max_tokens,
+            prompt_len=prompt_len,
+        )
 
         return seq_group
 
@@ -1375,6 +1395,10 @@ class LLMEngine:
                 "Pipeline parallelism is only supported through AsyncLLMEngine "
                 "as performance will be severely degraded otherwise.")
 
+        # Precomputed schedule metrics
+        self.precomputed_schedule.all_reduce_time.append(0)
+        self.precomputed_schedule.batch_start_time.append(time.perf_counter())
+
         # For llm_engine, there is no pipeline parallel support, so the engine
         # used is always 0.
         virtual_engine = 0
@@ -1444,17 +1468,15 @@ class LLMEngine:
             if allow_async_output_proc:
                 execute_model_req.async_callback = self.async_callbacks[
                     virtual_engine]
-
-
             
-            start_time = time.time()
-
+            start_time = time.perf_counter()
             outputs = self.model_executor.execute_model(
-                execute_model_req=execute_model_req)
+                execute_model_req=execute_model_req,
+            )
+            model_execution_time = time.perf_counter() - start_time
 
-            pre_schedule = PrecomputedSchedule()
-            pre_schedule.model_execution_time.append(time.time() - start_time)
-            pre_schedule.gpu_cache_usage.append(
+            self.precomputed_schedule.model_execution_time.append(model_execution_time)
+            self.precomputed_schedule.gpu_cache_usage.append(
                 self.scheduler[virtual_engine].block_manager.num_total_gpu_blocks -
                 self.scheduler[virtual_engine].block_manager.get_num_free_gpu_blocks()
             )

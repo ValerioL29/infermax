@@ -3,19 +3,25 @@ import argparse
 import pickle
 import time
 from dataclasses import asdict, dataclass
-from typing import List
+from typing import Dict, List
 
 import pandas as pd
 import torch
-from transformers import AutoTokenizer
 from tqdm import tqdm
-
 
 from vllm import LLM, SamplingParams
 from vllm.core.scheduler import PrecomputedSchedule, Scheduler
 from vllm.engine.arg_utils import EngineArgs
 from vllm.logger import init_logger
 from vllm.utils import FlexibleArgumentParser
+
+from engine_step_tracker import (
+    track_request_changes_and_create_batch_schedule, 
+    extract_scheduler_state, 
+    print_batch_info, 
+    RequestStateTracker, 
+    BatchInfo,
+)
 
 logger = init_logger(__name__)
 
@@ -29,9 +35,11 @@ class TraceRequest:
     num_prefill_tokens: int
     num_decode_tokens: int
 
-def parse_trace_file(csv_path: str) -> List[TraceRequest]:
+def parse_trace_file(csv_path: str, top_n: int = -1) -> List[TraceRequest]:
     """Parse the trace CSV file into TraceRequest objects."""
     df = pd.read_csv(csv_path)
+    if top_n > 0:
+        df = df.head(top_n)
     trace_requests = sorted(
         (
             TraceRequest(
@@ -63,6 +71,9 @@ def run_vllm(
     # Get the tokenizer
     tokenizer = llm.get_tokenizer()
 
+    # Initialize the precomputed schedule
+    precomputed_schedule = PrecomputedSchedule()
+
     # Scheduler
     scheduler: Scheduler = llm.llm_engine.scheduler[0]
     if use_srf_preemption:
@@ -91,7 +102,13 @@ def run_vllm(
         )
 
     # Create progress bar
+    step_count = 1
     processed_requests = 0
+
+    # Initialize request tracker for state changes
+    request_tracker: Dict[str, RequestStateTracker] = {}
+
+    # Progress bar
     pbar = tqdm(total=len(requests), desc="Processing requests")
 
     # Start timer
@@ -99,37 +116,74 @@ def run_vllm(
 
     # Profile each step with real-time tracking and incremental saving
     while llm.llm_engine.has_unfinished_requests():
-        # Step the engine
+        logger.info(f"\n--- Step {step_count} ---")
+
+        # Get number of running sequences
+        num_running_seqs = len(scheduler.running)
+        logger.info(f"Number of running sequences: {num_running_seqs}")
+
+        # Engine step for processing requests
+        step_start_time = time.perf_counter()
         outputs: list[RequestOutput] = llm.llm_engine.step()
+        step_end_time = time.perf_counter()
 
-        # Get num of running requests
-        num_running_requests = len(scheduler.running)
-        num_waiting_requests = len(scheduler.waiting)
-
-        # Count the number of finished requests
         num_finished_requests = len([output for output in outputs if output.finished])
 
-        # Update processed requests count
-        processed_requests += num_finished_requests
+        # Determine stage (Step_1, Step_2, etc.)
+        stage = f"Step_{step_count}"
 
-        # Update progress bar
-        pbar.update(num_finished_requests)
-        logger.info(
-            f"Batch status: {dict(
-                num_running_requests=num_running_requests,
-                num_waiting_requests=num_waiting_requests,
-                processed_requests=processed_requests,
-                preemption_count=scheduler.preemption_count,
-            )}"
+        # Extract scheduler state after the step
+        post_step_state = extract_scheduler_state(scheduler)
+
+        # Create batch schedule from scheduler state using new tracking logic
+        batch_schedule, total_kv_cache_tokens, total_processed_tokens = track_request_changes_and_create_batch_schedule(
+            post_step_state,
+            step_count,
+            request_tracker,
+            engine_args.enable_chunked_prefill,
         )
-        pbar.refresh()
+
+        # Create batch info
+        batch_info = BatchInfo(
+            step_id=step_count,
+            stage=stage,
+            batch_size=post_step_state["num_running"],
+            timestamp=precomputed_schedule.batch_start_time[-1],
+            duration=step_end_time - step_start_time,
+            num_running_requests=post_step_state["num_running"],
+            num_waiting_requests=post_step_state["num_waiting"],
+            num_finished_requests=num_finished_requests,
+            running_requests=post_step_state["running_requests"],
+            waiting_requests=post_step_state["waiting_requests"],
+            finished_request_ids=post_step_state["finished_req_ids"],
+            batch_schedule=batch_schedule,
+            total_kv_cache_tokens=total_kv_cache_tokens,
+            total_processed_tokens=total_processed_tokens,
+        )
+
+        # Update the precomputed schedule
+        precomputed_schedule.batch_info.append(asdict(batch_info))
+
+        # Print batch information
+        logger.info(f"Stage {batch_info.stage} finished")
+        print_batch_info(batch_info)
+        logger.info(f"Step {step_count} saved incrementally")
+
+        # Update processed requests count
+        step_count += 1
+        processed_requests += num_finished_requests
+        pbar.update(num_finished_requests)
+
+        # Check if all requests are finished
+        if not llm.llm_engine.has_unfinished_requests():
+            logger.info("\nAll requests completed!")
+            break
     
     # Stop timer
     end = time.perf_counter()
 
     # Update the schedule
-    precomputed_schedule = PrecomputedSchedule()
-    precomputed_schedule.batch_start_time.append(time.time())
+    precomputed_schedule.batch_start_time.append(end)
 
     pbar.close()
 
@@ -144,16 +198,16 @@ def main(args: argparse.Namespace):
     precomputed_schedule = PrecomputedSchedule()
 
     # Metrics containers
+    precomputed_schedule.all_reduce_time = [0]
     precomputed_schedule.batch_start_time = []
     precomputed_schedule.gpu_cache_usage = []
     precomputed_schedule.model_execution_time = []
     precomputed_schedule.model_forward_time = []
-    precomputed_schedule.all_reduce_time = [0]
-    precomputed_schedule.attn_time = []
-    precomputed_schedule.attn_profile_log = []
+    precomputed_schedule.batch_info = []
 
     # Parse the trace file
-    requests = parse_trace_file(args.trace_file)
+    # TODO: Remove top_n after testing
+    requests = parse_trace_file(args.trace_file, top_n=100)
 
     # Run the VLLM engine
     elapsed_time = run_vllm(
@@ -182,16 +236,15 @@ def main(args: argparse.Namespace):
         "total_num_tokens": total_num_tokens,
         "requests_per_second": len(requests) / elapsed_time,
         "tokens_per_second": total_num_tokens / elapsed_time,
-        'output_tokens_per_second': total_output_tokens / elapsed_time,
+        "output_tokens_per_second": total_output_tokens / elapsed_time,
         "batch_start_time": precomputed_schedule.batch_start_time,
         "gpu_cache_usage": precomputed_schedule.gpu_cache_usage,
-        'model_execution_time': precomputed_schedule.model_execution_time,
-        'model_forward_time': precomputed_schedule.model_forward_time,
-        'available_kv_cache_memory': precomputed_schedule.available_kv_cache_memory,
-        'cache_block_size': precomputed_schedule.cache_block_size,
-        'num_total_gpu_cache': precomputed_schedule.num_total_gpu_cache,
-        'attn_time': precomputed_schedule.attn_time,
-        'attn_profile_log': precomputed_schedule.attn_profile_log,
+        "model_execution_time": precomputed_schedule.model_execution_time,
+        "model_forward_time": precomputed_schedule.model_forward_time,
+        "available_kv_cache_memory": precomputed_schedule.available_kv_cache_memory,
+        "cache_block_size": precomputed_schedule.cache_block_size,
+        "num_total_gpu_cache": precomputed_schedule.num_total_gpu_cache,
+        "batch_info": precomputed_schedule.batch_info,
     }
 
     with open(args.output_file, "wb") as f:
@@ -204,19 +257,19 @@ if __name__ == "__main__":
         "--trace-file",
         type=str,
         default="trace.csv",
-        help='Path to the trace file.',
+        help="Path to the trace file.",
     )
     parser.add_argument(
         "--use-srf-preemption",
         action="store_true",
         default=False,
-        help='Use SRF preemption.',
+        help="Use SRF preemption.",
     )
     parser.add_argument(
-        '--output-file',
+        "--output-file",
         type=str,
         default="results.pkl",
-        help='Path to save the throughput results in pickle format.',
+        help="Path to save the throughput results in pickle format.",
     )
 
     parser = EngineArgs.add_cli_args(parser)

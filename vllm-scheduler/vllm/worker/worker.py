@@ -451,7 +451,7 @@ class Worker(LocalOrDistributedWorkerBase):
     def pin_lora(self, lora_id: int) -> bool:
         return self.model_runner.pin_lora(lora_id)
 
-    def list_loras(self) -> Set[int]:
+    def list_loras(self) -> Set[int]: 
         return self.model_runner.list_loras()
 
     def add_prompt_adapter(

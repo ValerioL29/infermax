@@ -177,6 +177,10 @@ class SequenceData(msgspec.Struct,
     # It is used to compute mrope_position_ids.
     _mrope_position_delta: Optional[int] = None
 
+    # Dias related
+    _num_prefill_tokens: Optional[int] = None
+    _num_decode_tokens: Optional[int] = None
+
     @staticmethod
     def from_prompt_token_counts(
             *token_counts: Tuple[int, int]) -> "SequenceData":
@@ -201,6 +205,8 @@ class SequenceData(msgspec.Struct,
     def from_seqs(
         prompt_token_ids: GenericSequence[int],
         output_token_ids: Optional[GenericSequence[int]] = None,
+        prompt_len: Optional[int] = None,
+        max_tokens: Optional[int] = None,
     ) -> "SequenceData":
         """
         Construct a :class:`SequenceData` instance from prompt and output
@@ -215,8 +221,12 @@ class SequenceData(msgspec.Struct,
         output_token_ids_arr = array(VLLM_TOKEN_ID_ARRAY_TYPE,
                                      output_token_ids)
 
-        return SequenceData(prompt_token_ids_arr,
-                            _output_token_ids=output_token_ids_arr)
+        return SequenceData(
+            prompt_token_ids_arr,
+            _output_token_ids=output_token_ids_arr,
+            _num_prefill_tokens=prompt_len,
+            _num_decode_tokens=max_tokens,
+        )
 
     def __post_init__(self) -> None:
         assert self._prompt_token_ids.typecode == "l"
@@ -411,6 +421,8 @@ class Sequence:
         lora_request: Optional[LoRARequest] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         from_decoder_prompt: bool = True,
+        prompt_len: int = 0,
+        max_tokens: int = 0,
     ) -> None:
         self.seq_id = seq_id
         self.inputs = inputs
@@ -446,7 +458,11 @@ class Sequence:
                              f"invalid input {inputs}; did you forget the "
                              "encoder input prompt fields?")
 
-        self.data = SequenceData.from_seqs(self.prompt_token_ids)
+        self.data = SequenceData.from_seqs(
+            self.prompt_token_ids,
+            prompt_len=prompt_len,
+            max_tokens=max_tokens,
+        )
         self.output_logprobs: SampleLogprobs = []
         self.output_text = ""
 
@@ -462,6 +478,18 @@ class Sequence:
         self.read_offset = 0
         # Input + output tokens
         self.tokens: Optional[List[str]] = None
+
+        ## Dias related
+        # Number of prefill tokens
+        self.num_prefill_tokens = prompt_len
+        # Number of decode tokens
+        self.num_decode_tokens = max_tokens
+
+    def get_num_prefill_tokens(self) -> int:
+        return self.num_prefill_tokens
+    
+    def get_num_decode_tokens(self) -> int:
+        return self.num_decode_tokens
 
     @property
     def n_blocks(self) -> int:
@@ -678,6 +706,8 @@ class SequenceGroup:
         trace_headers: Optional[Mapping[str, str]] = None,
         prompt_adapter_request: Optional[PromptAdapterRequest] = None,
         priority: int = 0,
+        prompt_len: int = 0,
+        max_tokens: int = 0,
     ) -> None:
         self.request_id = request_id
         self.seqs = seqs
@@ -702,6 +732,18 @@ class SequenceGroup:
         self.priority = priority
 
         self.cached_request_output = None
+
+        ## Dias related
+        # Number of prefill tokens
+        self.num_prefill_tokens = prompt_len
+        # Number of decode tokens
+        self.num_decode_tokens = max_tokens
+
+    def get_num_prefill_tokens(self) -> int:
+        return self.num_prefill_tokens
+
+    def get_num_decode_tokens(self) -> int:
+        return self.num_decode_tokens
 
     @property
     def prompt(self) -> Optional[str]:

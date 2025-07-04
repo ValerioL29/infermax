@@ -1388,15 +1388,6 @@ class Scheduler:
                 is_prefill=True, enable_chunking=enable_chunking))
 
     def _schedule_infermax(self, enable_chunking) -> SchedulerOutputs:
-        self.precomputed_schedule.attn_profile_log.append([])
-        self.precomputed_schedule.attn_time.append(0)
-        self.precomputed_schedule.all_reduce_time.append(0)
-        self.precomputed_schedule.batch_start_time.append(time.time())
-        # self.precomputed_schedule.gpu_cache_usage.append(
-        #     self.block_manager.num_total_gpu_blocks - 
-        #     self.block_manager.get_num_free_gpu_blocks()
-        # )
-
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,
@@ -1471,16 +1462,6 @@ class Scheduler:
         decodes. If there's a pressure on GPU memory, decode requests can
         be swapped or preempted.
         """
-        # Precomputed schedule metrics
-        self.precomputed_schedule.attn_profile_log.append([])
-        self.precomputed_schedule.attn_time.append(0)
-        self.precomputed_schedule.all_reduce_time.append(0)
-        self.precomputed_schedule.batch_start_time.append(time.time())
-        # self.precomputed_schedule.gpu_cache_usage.append(
-        #     self.block_manager.num_total_gpu_blocks - 
-        #     self.block_manager.get_num_free_gpu_blocks()
-        # )
-
         # Include running requests to the budget.
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
@@ -1591,16 +1572,6 @@ class Scheduler:
         inter token latency because decodes requests don't need to be blocked
         by prefill requests.
         """
-        # Precomputed schedule metrics
-        self.precomputed_schedule.attn_profile_log.append([])
-        self.precomputed_schedule.attn_time.append(0)
-        self.precomputed_schedule.all_reduce_time.append(0)
-        self.precomputed_schedule.batch_start_time.append(time.time())
-        # self.precomputed_schedule.gpu_cache_usage.append(
-        #     self.block_manager.num_total_gpu_blocks - 
-        #     self.block_manager.get_num_free_gpu_blocks()
-        # )
-
         budget = SchedulingBudget(
             token_budget=self.scheduler_config.max_num_batched_tokens,
             max_num_seqs=self.scheduler_config.max_num_seqs,

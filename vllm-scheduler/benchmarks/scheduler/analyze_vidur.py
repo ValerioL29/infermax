@@ -49,6 +49,7 @@ def process_metrics_file(metrics_file: str):
     results = {
         "info": extract_info_from_filename(metrics_file),
         "total_time": total_time,
+        "batch_start_time": batch_start_time,
         "cache_block_size": item["cache_block_size"],
         "total_num_tokens": item["total_num_tokens"],
         "requests_per_second": item["requests_per_second"],

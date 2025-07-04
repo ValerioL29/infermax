@@ -1674,8 +1674,10 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_end_m.record()
             model_forward_end_m.synchronize()
             try:
-                PrecomputedSchedule().model_forward_time.append(model_forward_start_m.elapsed_time(
-                    model_forward_end_m) / 1000)
+                PrecomputedSchedule().model_forward_time.append(
+                    model_forward_start_m.elapsed_time(
+                    model_forward_end_m) / 1000
+                )
             except:
                 pass
 

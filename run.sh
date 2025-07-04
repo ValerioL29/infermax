@@ -9,4 +9,4 @@ python vllm-scheduler/benchmarks/scheduler/simple.py \
     --max-num-seqs 8192 \
     --trace-file vidur/data/processed_traces/splitwise_conv.csv \
     --use-srf-preemption \
-    --output-file outputs/llama_3_70b_4096_16384_srf_vllm.pkl
+    --output-file outputs/llama_3_70b_8192_16384_srf_vllm_re.pkl
