@@ -84,11 +84,9 @@ def run_vllm(
 
     # Initialize the precomputed schedule
     precomputed_schedule = PrecomputedSchedule()
-    # Register a reference of llm instance in the precomputed schedule
-    precomputed_schedule.llm = llm
 
     # Scheduler
-    scheduler: Scheduler = precomputed_schedule.llm.llm_engine.scheduler[0]
+    scheduler: Scheduler = llm.llm_engine.scheduler[0]
     if use_srf_preemption:
         scheduler.set_use_srf_preemption(use_srf_preemption)
 
@@ -109,12 +107,7 @@ def run_vllm(
     ###########################################################################
     # Initialize the accumulated GPU time, it will be updated in each model
     # forward time is updated.
-    precomputed_schedule.accumulated_gpu_time = 0.0
     precomputed_schedule.use_zero_cpu_time_scheduling = True
-    # Gather requests and add it as a deque to the precomputed schedule
-    # We will fire a request when "accumulated GPU time" becomes the specified
-    # arrival time of the request.
-    precomputed_schedule.trace_requests = deque()
     for i, request in enumerate(requests):
         sampling_param = SamplingParams(
             n=1,
@@ -126,22 +119,12 @@ def run_vllm(
         prompt_token_ids = torch.randint(
             tokenizer.vocab_size, size=(request.num_prefill_tokens,)
         ).tolist()
-        precomputed_schedule.trace_requests.append(
-            dict(
-                request_id=f"seq{i}",
-                prompt={"prompt_token_ids": prompt_token_ids},
-                params=sampling_param,
-                arrival_time=request.arrival_time,
-            )
+        llm.llm_engine.add_request(
+            request_id=f"seq{i}",
+            prompt={"prompt_token_ids": prompt_token_ids},
+            params=sampling_param,
+            arrival_time=request.arrival_time,
         )
-    # Add first request to the engine as a cold start
-    precomputed_schedule.next_req = precomputed_schedule.trace_requests.popleft()
-    if (
-        precomputed_schedule.accumulated_gpu_time
-        >= precomputed_schedule.next_req["arrival_time"]
-    ):
-        precomputed_schedule.llm.llm_engine.add_request(**precomputed_schedule.next_req)
-        precomputed_schedule.next_req = precomputed_schedule.trace_requests.popleft()
 
     # Create progress bar
     processed_requests = 0
@@ -159,8 +142,13 @@ def run_vllm(
     # Start timer
     start = time.perf_counter()
 
+    # Set zero-cpu-time scheduling and initialize accumulated GPU time
+    scheduler.set_use_zero_cpu_scheduling(
+        precomputed_schedule.use_zero_cpu_time_scheduling,
+    )
+
     # Profile each step with real-time tracking and incremental saving
-    while precomputed_schedule.llm.llm_engine.has_unfinished_requests():
+    while llm.llm_engine.has_unfinished_requests():
         step_count = step_tracker.get_current_step()
         logger.info(f"\n--- Step {step_count} ---")
 
@@ -173,7 +161,7 @@ def run_vllm(
 
         # Engine step for processing requests
         step_start_time = time.perf_counter()
-        outputs: list[RequestOutput] = precomputed_schedule.llm.llm_engine.step()
+        outputs: list[RequestOutput] = llm.llm_engine.step()
         step_end_time = time.perf_counter()
 
         num_finished_requests = len([output for output in outputs if output.finished])
@@ -230,7 +218,7 @@ def run_vllm(
         pbar.update(num_finished_requests)
 
         # Check if all requests are finished
-        if not precomputed_schedule.llm.llm_engine.has_unfinished_requests():
+        if not llm.llm_engine.has_unfinished_requests():
             logger.info("\nAll requests completed!")
             break
 
@@ -263,7 +251,7 @@ def main(args: argparse.Namespace):
 
     # Parse the trace file
     # TODO: remove testing for zero-cpu-time scheduling
-    requests = parse_trace_file(args.trace_file, top_n=100)
+    requests = parse_trace_file(args.trace_file)
 
     # Run the VLLM engine
     elapsed_time, preemption_count = run_vllm(

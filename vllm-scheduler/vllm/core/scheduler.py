@@ -483,6 +483,9 @@ class Scheduler:
         # Preemption counter
         self.preemption_count = 0
 
+        # For zero-cpu-time scheduling
+        self.use_zero_cpu_scheduling = False
+
     @property
     def next_cache_id(self):
         return (self.cache_id + 1) % self.num_cache_iters
@@ -495,6 +498,26 @@ class Scheduler:
     def num_decoding_tokens_per_seq(self) -> int:
         """The number of new tokens."""
         return 1
+
+    def set_use_zero_cpu_scheduling(self, use_zero_cpu_scheduling: bool) -> None:
+        """Enable or disable zero-CPU scheduling mode.
+
+        Args:
+            use_zero_cpu_scheduling: If True, enables zero-CPU scheduling mode where
+                CPU overhead is simulated as zero and scheduling is based purely on
+                accumulated GPU time.
+        """
+        assert (
+            self.precomputed_schedule.use_zero_cpu_time_scheduling
+            == use_zero_cpu_scheduling
+        ), "Zero-CPU scheduling mode cannot be changed after initialization"
+        if use_zero_cpu_scheduling:
+            # Initialize accumulated GPU time to current time
+            self.precomputed_schedule.accumulated_gpu_time = time.time()
+            self.use_zero_cpu_scheduling = True
+            logger.info("Zero-CPU scheduling enabled - CPU overhead simulated as zero")
+        else:
+            logger.info("Zero-CPU scheduling disabled - using regular scheduling")
 
     def set_use_srf_preemption(self, use_srf_preemption: bool) -> None:
         self.use_srf_preemption = use_srf_preemption
@@ -1351,7 +1374,16 @@ class Scheduler:
         waiting_queue = self.waiting
 
         leftover_waiting_sequences: Deque[SequenceGroup] = deque()
-        while self._passed_delay(time.time()) and waiting_queue:
+
+        # Zero-CPU scheduling injection
+        if self.precomputed_schedule.use_zero_cpu_time_scheduling:
+            passed_delay_check_func = self._passed_delay_zero_cpu
+        else:
+            passed_delay_check_func = self._passed_delay
+        # time.time() will only make sense in regular scheduling.
+        # but we need it as a placeholder for the zero checking function.
+
+        while passed_delay_check_func(time.time()) and waiting_queue:
             seq_group = waiting_queue[0]
 
             waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
@@ -1780,7 +1812,12 @@ class Scheduler:
         scheduler_start_time = time.perf_counter()
 
         scheduler_outputs: SchedulerOutputs = self._schedule()
-        now = time.time()
+        if self.precomputed_schedule.use_zero_cpu_time_scheduling:
+            # For zero-cpu-time scheduling, we use the accumulated GPU time
+            # as the current time.
+            now = self.precomputed_schedule.accumulated_gpu_time
+        else:
+            now = time.time()
 
         if not self.cache_config.enable_prefix_caching:
             common_computed_block_nums = []
@@ -2125,6 +2162,50 @@ class Scheduler:
             ) or not self.running
         else:
             passed_delay = True
+        return passed_delay
+
+    def _passed_delay_zero_cpu(self, now: float) -> bool:
+        """Simulate instantaneous CPU processing using actual GPU timing.
+
+        Real System (with CPU overhead):
+            Time: 0.0s  0.5s  1.0s  1.5s  2.0s
+            CPU:  [A arrives] [CPU processes A] [B arrives] [CPU processes B]
+            GPU:                    [GPU executes A]              [GPU executes B]
+
+        Zero-CPU Simulation:
+            Time: 0.0s  0.1s  0.2s  1.0s  1.1s
+            CPU:  [A arrives] [B arrives] (instantaneous processing)
+            GPU:  [GPU starts A] [GPU continues A] [GPU starts B] [GPU continues B]
+        """
+        # Dummy placeholder for the actual time.
+        if not self.waiting:
+            logger.info(f"At time {now}, no waiting sequences")
+            return True
+
+        # Get the earliest arrival time
+        earliest_arrival_time = min([e.metrics.arrival_time for e in self.waiting])
+
+        # Calculate current time in zero-CPU simulation
+        current_simulated_time = self.precomputed_schedule.accumulated_gpu_time
+
+        # Handle previous prompt logic similar to regular scheduling
+        if self.prev_prompt:
+            # Calculate the last prompt latency in zero-CPU time
+            self.last_prompt_latency = current_simulated_time - self.prev_time
+        self.prev_time = current_simulated_time
+        # Apply delay factor logic similar to regular scheduling
+        if self.scheduler_config.delay_factor > 0:
+            # In zero-CPU scheduling, we use the delay factor to determine if enough
+            # "simulated time" has passed since the earliest arrival
+            time_since_earliest_arrival = current_simulated_time - earliest_arrival_time
+            passed_delay = (
+                time_since_earliest_arrival
+                > (self.scheduler_config.delay_factor * self.last_prompt_latency)
+                or not self.running
+            )
+        else:
+            passed_delay = True
+
         return passed_delay
 
     def _get_num_lookahead_slots(self, is_prefill: bool, enable_chunking: bool) -> int:

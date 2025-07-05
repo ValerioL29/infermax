@@ -1810,29 +1810,19 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             try:
                 current_step = StepTracker().get_current_step()
                 precomputed_schedule = PrecomputedSchedule()
-                local_model_forward_time = (
+                local_model_forward_duration = (
                     model_forward_start_m.elapsed_time(model_forward_end_m) / 1000
                 )
                 precomputed_schedule.model_forward_time[current_step] = (
-                    local_model_forward_time
+                    local_model_forward_duration
                 )
                 if (
                     hasattr(precomputed_schedule, "use_zero_cpu_time_scheduling")
                     and precomputed_schedule.use_zero_cpu_time_scheduling
                 ):
                     precomputed_schedule.accumulated_gpu_time += (
-                        local_model_forward_time
+                        local_model_forward_duration
                     )
-                    while (
-                        precomputed_schedule.next_req["arrival_time"]
-                        <= precomputed_schedule.accumulated_gpu_time
-                    ):
-                        precomputed_schedule.llm.llm_engine.add_request(
-                            **precomputed_schedule.next_req
-                        )
-                        precomputed_schedule.next_req = (
-                            precomputed_schedule.trace_requests.popleft()
-                        )
             except Exception as e:
                 logger.error(f"Error in model forward time tracking: {e}")
                 raise e
