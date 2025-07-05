@@ -1,4 +1,5 @@
 """A block manager that manages token blocks."""
+
 from typing import Dict, List, Optional
 from typing import Sequence as GenericSequence
 from typing import Tuple
@@ -6,15 +7,21 @@ from typing import Tuple
 from vllm.core.block.block_table import BlockTable
 from vllm.core.block.cpu_gpu_block_allocator import CpuGpuBlockAllocator
 from vllm.core.block.interfaces import Block
-from vllm.core.block.prefix_caching_block import (ComputedBlocksTracker,
-                                                  LastAccessBlocksTracker)
+from vllm.core.block.prefix_caching_block import (
+    ComputedBlocksTracker,
+    LastAccessBlocksTracker,
+)
 from vllm.core.block.utils import check_no_caching_or_swa_for_blockmgr_encdec
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
-from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
+from vllm.logger import init_logger
 from vllm.utils import Device
+
+from vcostlm.core.sequence import Sequence, SequenceGroup, SequenceStatus
 
 SeqId = int
 EncoderSeqId = str
+
+logger = init_logger(__name__)
 
 
 class SelfAttnBlockSpaceManager(BlockSpaceManager):
@@ -55,6 +62,8 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             window. Defaults to None.
         enable_caching (bool, optional): Flag indicating whether caching is
             enabled. Defaults to False.
+        enable_ultimate_policy (bool, optional): Flag indicating whether the
+            Ultimate policy is enabled. Defaults to False.
     """
 
     def __init__(
@@ -65,6 +74,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         watermark: float = 0.01,
         sliding_window: Optional[int] = None,
         enable_caching: bool = False,
+        enable_ultimate_policy: bool = False,
     ) -> None:
         self.block_size = block_size
         self.num_total_gpu_blocks = num_gpu_blocks
@@ -87,7 +97,6 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         assert watermark >= 0.0
 
         self.enable_caching = enable_caching
-
         self.watermark_blocks = int(watermark * num_gpu_blocks)
 
         self.block_allocator = CpuGpuBlockAllocator.create(
@@ -101,67 +110,165 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.cross_block_tables: Dict[EncoderSeqId, BlockTable] = {}
 
         self._computed_blocks_tracker = ComputedBlocksTracker(
-            self.block_allocator)
-        self._last_access_blocks_tracker = LastAccessBlocksTracker(
-            self.block_allocator)
+            self.block_allocator, self.block_size, self.enable_caching
+        )
+        self._last_access_blocks_tracker = LastAccessBlocksTracker(self.block_allocator)
 
-    def can_allocate(self,
-                     seq_group: SequenceGroup,
-                     num_lookahead_slots: int = 0) -> AllocStatus:
+        # Ultimate policy
+        self.enable_ultimate_policy = enable_ultimate_policy
+        # Track logical reservations for Ultimate policy
+        self._logical_reservations: Dict[SeqId, int] = {}  # seq_id -> reserved blocks
+
+    def _get_logical_free_gpu_blocks(self) -> int:
+        """Get the number of logically free GPU blocks, accounting for Ultimate policy reservations."""
+        physical_free_blocks = self.block_allocator.get_num_free_blocks(
+            device=Device.GPU
+        )
+
+        if not self.enable_ultimate_policy:
+            return physical_free_blocks
+
+        # Subtract reserved blocks for Ultimate policy
+        total_reserved_blocks = sum(self._logical_reservations.values())
+        logical_free_blocks = physical_free_blocks - total_reserved_blocks
+
+        logger.debug(
+            f"[block-manager] Physical free blocks: {physical_free_blocks}, "
+            f"Total reserved blocks: {total_reserved_blocks}, "
+            f"Logical free blocks: {logical_free_blocks}"
+        )
+
+        return max(0, logical_free_blocks)
+
+    def _reserve_blocks_for_sequence(self, seq: Sequence) -> int:
+        """Reserve blocks for a sequence under the Ultimate policy.
+
+        Returns the number of blocks reserved.
+        """
+        if not self.enable_ultimate_policy:
+            return 0
+
+        # Calculate (I + O - 1) tokens and convert to blocks
+        total_kv_tokens = seq.get_total_kv_tokens()
+        reserved_blocks = (total_kv_tokens + self.block_size - 1) // self.block_size
+
+        logger.debug(
+            f"[block-manager] Reserving {reserved_blocks} blocks for sequence"
+            f" {seq.seq_id} (total_kv_tokens: {total_kv_tokens})"
+        )
+
+        return reserved_blocks
+
+    def _release_reservation_for_sequence(self, seq_id: int) -> None:
+        """Release the block reservation for a sequence."""
+        if not self.enable_ultimate_policy:
+            return
+
+        if seq_id in self._logical_reservations:
+            reserved_blocks = self._logical_reservations.pop(seq_id)
+            logger.debug(
+                f"[block-manager] Released {reserved_blocks} reserved blocks for"
+                f" sequence {seq_id}"
+            )
+
+    def can_allocate(
+        self, seq_group: SequenceGroup, num_lookahead_slots: int = 0
+    ) -> AllocStatus:
         # FIXME(woosuk): Here we assume that all sequences in the group share
         # the same prompt. This may not be true for preempted sequences.
 
         check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
 
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
-        num_required_blocks = BlockTable.get_num_required_blocks(
-            seq.get_token_ids(),
-            block_size=self.block_size,
-            num_lookahead_slots=num_lookahead_slots,
-        )
+
+        if self.enable_ultimate_policy:
+            # For Ultimate policy, we need to check if we have enough logical free blocks
+            # to accommodate the sequence's prompt tokens plus the reserved blocks
+            seq_token_ids = seq.get_token_ids()
+            num_required_blocks = BlockTable.get_num_required_blocks(
+                seq_token_ids,
+                block_size=self.block_size,
+                num_lookahead_slots=num_lookahead_slots,
+            )
+
+            # Add reserved blocks for Ultimate policy
+            reserved_blocks = self._reserve_blocks_for_sequence(seq)
+            total_required_blocks = num_required_blocks + reserved_blocks
+
+            logger.debug(
+                f"[block-manager] Ultimate policy - seq {seq.seq_id}: "
+                f"required_blocks: {num_required_blocks}, "
+                f"reserved_blocks: {reserved_blocks}, "
+                f"total_required_blocks: {total_required_blocks}"
+            )
+        else:
+            num_required_blocks = BlockTable.get_num_required_blocks(
+                seq.get_token_ids(),
+                block_size=self.block_size,
+                num_lookahead_slots=num_lookahead_slots,
+            )
+            total_required_blocks = num_required_blocks
 
         if seq_group.is_encoder_decoder():
             encoder_seq = seq_group.get_encoder_seq()
             assert encoder_seq is not None
-            num_required_blocks += BlockTable.get_num_required_blocks(
+            encoder_required_blocks = BlockTable.get_num_required_blocks(
                 encoder_seq.get_token_ids(),
                 block_size=self.block_size,
             )
+            total_required_blocks += encoder_required_blocks
 
         if self.max_block_sliding_window is not None:
-            num_required_blocks = min(num_required_blocks,
-                                      self.max_block_sliding_window)
+            total_required_blocks = min(
+                total_required_blocks, self.max_block_sliding_window
+            )
 
-        num_free_gpu_blocks = self.block_allocator.get_num_free_blocks(
-            device=Device.GPU)
+        num_logical_free_gpu_blocks = self._get_logical_free_gpu_blocks()
 
         # Use watermark to avoid frequent cache eviction.
-        if (self.num_total_gpu_blocks - num_required_blocks <
-                self.watermark_blocks):
+        if self.num_total_gpu_blocks - total_required_blocks < self.watermark_blocks:
             return AllocStatus.NEVER
-        if num_free_gpu_blocks - num_required_blocks >= self.watermark_blocks:
+        if num_logical_free_gpu_blocks - total_required_blocks >= self.watermark_blocks:
             return AllocStatus.OK
         else:
             return AllocStatus.LATER
 
     def _allocate_sequence(self, seq: Sequence) -> BlockTable:
+        seq_token_ids = seq.get_token_ids()
         block_table = BlockTable(
             block_size=self.block_size,
             block_allocator=self.block_allocator,
             max_block_sliding_window=self.max_block_sliding_window,
         )
-        if seq.get_token_ids():
+
+        # For Ultimate policy, we only allocate blocks for the actual prompt tokens
+        # and reserve the additional blocks logically
+        if self.enable_ultimate_policy:
+            # Reserve blocks for the Ultimate policy
+            reserved_blocks = self._reserve_blocks_for_sequence(seq)
+            self._logical_reservations[seq.seq_id] = reserved_blocks
+
+            logger.debug(
+                f"[block-manager] Allocated sequence {seq.seq_id} with"
+                f" {len(seq_token_ids)} prompt tokens and {reserved_blocks} reserved"
+                " blocks"
+            )
+
+        if seq_token_ids:
+            # NOTE: If there are any factors affecting the block besides
+            # token_ids, they should be added as input to extra_hash.
+            extra_hash = seq.extra_hash()
             # Add blocks to the block table only if the sequence is non empty.
-            block_table.allocate(seq.get_token_ids())
+            block_table.allocate(token_ids=seq_token_ids, extra_hash=extra_hash)
 
         return block_table
 
     def allocate(self, seq_group: SequenceGroup) -> None:
-
         # Allocate self-attention block tables for decoder sequences
         waiting_seqs = seq_group.get_seqs(status=SequenceStatus.WAITING)
-        assert not (set(seq.seq_id for seq in waiting_seqs)
-                    & self.block_tables.keys()), "block table already exists"
+        assert not (
+            set(seq.seq_id for seq in waiting_seqs) & self.block_tables.keys()
+        ), "block table already exists"
 
         # NOTE: Here we assume that all sequences in the group have the same
         # prompt.
@@ -170,7 +277,6 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_tables[seq.seq_id] = block_table
 
         # Track seq
-        self._computed_blocks_tracker.add_seq(seq.seq_id)
         self._last_access_blocks_tracker.add_seq(seq.seq_id)
 
         # Assign the block table for each sequence.
@@ -178,7 +284,6 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             self.block_tables[seq.seq_id] = block_table.fork()
 
             # Track seq
-            self._computed_blocks_tracker.add_seq(seq.seq_id)
             self._last_access_blocks_tracker.add_seq(seq.seq_id)
 
         # Allocate cross-attention block table for encoder sequence
@@ -187,9 +292,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         # encoder prompt.
         request_id = seq_group.request_id
 
-        assert (request_id
-                not in self.cross_block_tables), \
-            "block table already exists"
+        assert request_id not in self.cross_block_tables, "block table already exists"
 
         check_no_caching_or_swa_for_blockmgr_encdec(self, seq_group)
 
@@ -199,8 +302,9 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             block_table = self._allocate_sequence(encoder_seq)
             self.cross_block_tables[request_id] = block_table
 
-    def can_append_slots(self, seq_group: SequenceGroup,
-                         num_lookahead_slots: int) -> bool:
+    def can_append_slots(
+        self, seq_group: SequenceGroup, num_lookahead_slots: int
+    ) -> bool:
         """Determine if there is enough space in the GPU KV cache to continue
         generation of the specified sequence group.
 
@@ -212,20 +316,20 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         for known tokens. The contents of the lookahead slots are not defined.
         This is used by speculative decoding when speculating future tokens.
         """
+        if self.enable_ultimate_policy:
+            # For the "Ultimate" policy, we always return True since
+            # we have already reserved (I + O - 1) kv cache tokens at the start
+            return True
 
         num_touched_blocks = 0
         for seq in seq_group.get_seqs(status=SequenceStatus.RUNNING):
             block_table = self.block_tables[seq.seq_id]
-
-            num_touched_blocks += (
-                block_table.get_num_blocks_touched_by_append_slots(
-                    token_ids=block_table.get_unseen_token_ids(
-                        seq.get_token_ids()),
-                    num_lookahead_slots=num_lookahead_slots,
-                ))
-
-        num_free_gpu_blocks = self.block_allocator.get_num_free_blocks(
-            Device.GPU)
+            unseen_token_ids = block_table.get_unseen_token_ids(seq.get_token_ids())
+            num_touched_blocks += block_table.get_num_blocks_touched_by_append_slots(
+                token_ids=unseen_token_ids,
+                num_lookahead_slots=num_lookahead_slots,
+            )
+        num_free_gpu_blocks = self.block_allocator.get_num_free_blocks(Device.GPU)
         return num_touched_blocks <= num_free_gpu_blocks
 
     def append_slots(
@@ -233,13 +337,13 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         seq: Sequence,
         num_lookahead_slots: int,
     ) -> List[Tuple[int, int]]:
-
         block_table = self.block_tables[seq.seq_id]
-
+        unseen_token_ids = block_table.get_unseen_token_ids(seq.get_token_ids())
         block_table.append_token_ids(
-            token_ids=block_table.get_unseen_token_ids(seq.get_token_ids()),
+            token_ids=unseen_token_ids,
             num_lookahead_slots=num_lookahead_slots,
             num_computed_slots=seq.data.get_num_computed_tokens(),
+            extra_hash=seq.extra_hash(),
         )
         # Return any new copy-on-writes.
         new_cows = self.block_allocator.clear_copy_on_writes()
@@ -252,9 +356,13 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # Already freed or haven't been scheduled yet.
             return
 
+        # Release Ultimate policy reservation
+        self._release_reservation_for_sequence(seq_id)
+
         # Update seq block ids with the latest access time
         self._last_access_blocks_tracker.update_seq_blocks_last_access(
-            seq_id, self.block_tables[seq.seq_id].physical_block_ids)
+            seq_id, self.block_tables[seq.seq_id].physical_block_ids
+        )
 
         # Untrack seq
         self._last_access_blocks_tracker.remove_seq(seq_id)
@@ -290,11 +398,9 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             # only during freeing of block ids, the blocks are actually added to
             # the evictor (which is when the most updated time is required)
             # (This avoids expensive calls to mark_blocks_as_accessed(..))
-            self._last_access_blocks_tracker.update_last_access(
-                seq.seq_id, now)
+            self._last_access_blocks_tracker.update_last_access(seq.seq_id, now)
 
-    def mark_blocks_as_computed(self, seq_group: SequenceGroup,
-                                token_chunk_size: int):
+    def mark_blocks_as_computed(self, seq_group: SequenceGroup, token_chunk_size: int):
         # If prefix caching is enabled, mark immutable blocks as computed
         # right after they have been scheduled (for prefill). This assumes
         # the scheduler is synchronous so blocks are actually computed when
@@ -302,7 +408,8 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_allocator.mark_blocks_as_computed([])
 
     def get_common_computed_block_ids(
-            self, seqs: List[Sequence]) -> GenericSequence[int]:
+        self, seqs: List[Sequence]
+    ) -> GenericSequence[int]:
         """Determine which blocks for which we skip prefill.
 
         With prefix caching we can skip prefill for previously-generated blocks.
@@ -314,15 +421,17 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         """
         computed_seq_block_ids = []
         for seq in seqs:
-            computed_seq_block_ids.append(
-                self._computed_blocks_tracker.
-                get_cached_computed_blocks_and_update(
-                    seq.seq_id,
-                    self.block_tables[seq.seq_id].physical_block_ids))
+            all_blocks = self.block_tables[seq.seq_id].physical_block_ids
+            num_cached_tokens = self._computed_blocks_tracker.get_num_cached_tokens(seq)
+            assert num_cached_tokens % self.block_size == 0
+            num_cached_blocks = num_cached_tokens // self.block_size
+            computed_block_ids = all_blocks[:num_cached_blocks]
+            computed_seq_block_ids.append(computed_block_ids)
 
         # NOTE(sang): This assumes seq_block_ids doesn't contain any None.
         return self.block_allocator.get_common_computed_block_ids(
-            computed_seq_block_ids)  # type: ignore
+            computed_seq_block_ids
+        )  # type: ignore
 
     def fork(self, parent_seq: Sequence, child_seq: Sequence) -> None:
         if parent_seq.seq_id not in self.block_tables:
@@ -332,24 +441,30 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_tables[child_seq.seq_id] = src_block_table.fork()
 
         # Track child seq
-        self._computed_blocks_tracker.add_seq(child_seq.seq_id)
         self._last_access_blocks_tracker.add_seq(child_seq.seq_id)
 
-    def can_swap_in(self, seq_group: SequenceGroup,
-                    num_lookahead_slots: int) -> AllocStatus:
-        """Returns the AllocStatus for the given sequence_group 
+        # For Ultimate policy, also reserve blocks for the child sequence
+        if self.enable_ultimate_policy:
+            reserved_blocks = self._reserve_blocks_for_sequence(child_seq)
+            self._logical_reservations[child_seq.seq_id] = reserved_blocks
+
+    def can_swap_in(
+        self, seq_group: SequenceGroup, num_lookahead_slots: int
+    ) -> AllocStatus:
+        """Returns the AllocStatus for the given sequence_group
         with num_lookahead_slots.
 
         Args:
             sequence_group (SequenceGroup): The sequence group to swap in.
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
             AllocStatus: The AllocStatus for the given sequence group.
         """
-        return self._can_swap(seq_group, Device.GPU, SequenceStatus.SWAPPED,
-                              num_lookahead_slots)
+        return self._can_swap(
+            seq_group, Device.GPU, SequenceStatus.SWAPPED, num_lookahead_slots
+        )
 
     def swap_in(self, seq_group: SequenceGroup) -> List[Tuple[int, int]]:
         """Returns the block id mapping (from CPU to GPU) generated by
@@ -359,7 +474,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             seq_group (SequenceGroup): The sequence group to swap in.
 
         Returns:
-            List[Tuple[int, int]]: The mapping of swapping block from CPU 
+            List[Tuple[int, int]]: The mapping of swapping block from CPU
                 to GPU.
         """
         physical_block_id_mapping = []
@@ -368,40 +483,39 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             if len(blocks) == 0:
                 continue
 
-            seq_swap_mapping = self.block_allocator.swap(blocks=blocks,
-                                                         src_device=Device.CPU,
-                                                         dst_device=Device.GPU)
+            seq_swap_mapping = self.block_allocator.swap(
+                blocks=blocks, src_device=Device.CPU, dst_device=Device.GPU
+            )
 
             # Refresh the block ids of the table (post-swap)
             self.block_tables[seq.seq_id].update(blocks)
 
             seq_physical_block_id_mapping = {
                 self.block_allocator.get_physical_block_id(
-                    Device.CPU, cpu_block_id):
-                self.block_allocator.get_physical_block_id(
-                    Device.GPU, gpu_block_id)
+                    Device.CPU, cpu_block_id
+                ): self.block_allocator.get_physical_block_id(Device.GPU, gpu_block_id)
                 for cpu_block_id, gpu_block_id in seq_swap_mapping.items()
             }
 
             physical_block_id_mapping.extend(
-                list(seq_physical_block_id_mapping.items()))
+                list(seq_physical_block_id_mapping.items())
+            )
 
         return physical_block_id_mapping
 
     def can_swap_out(self, seq_group: SequenceGroup) -> bool:
-        """Returns whether we can swap out the given sequence_group 
+        """Returns whether we can swap out the given sequence_group
         with num_lookahead_slots.
 
         Args:
-            seq_group (SequenceGroup): The sequence group to swap in.
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            seq_group (SequenceGroup): The sequence group to swap out.
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
             bool: Whether it's possible to swap out current sequence group.
         """
-        alloc_status = self._can_swap(seq_group, Device.CPU,
-                                      SequenceStatus.RUNNING)
+        alloc_status = self._can_swap(seq_group, Device.CPU, SequenceStatus.RUNNING)
         return alloc_status == AllocStatus.OK
 
     def swap_out(self, seq_group: SequenceGroup) -> List[Tuple[int, int]]:
@@ -409,10 +523,10 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         swapping out the given sequence_group with num_lookahead_slots.
 
         Args:
-            sequence_group (SequenceGroup): The sequence group to swap in.
+            sequence_group (SequenceGroup): The sequence group to swap out.
 
         Returns:
-            List[Tuple[int, int]]: The mapping of swapping block from 
+            List[Tuple[int, int]]: The mapping of swapping block from
                 GPU to CPU.
         """
         physical_block_id_mapping = []
@@ -421,28 +535,29 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             if len(blocks) == 0:
                 continue
 
-            seq_swap_mapping = self.block_allocator.swap(blocks=blocks,
-                                                         src_device=Device.GPU,
-                                                         dst_device=Device.CPU)
+            seq_swap_mapping = self.block_allocator.swap(
+                blocks=blocks, src_device=Device.GPU, dst_device=Device.CPU
+            )
 
             # Refresh the block ids of the table (post-swap)
             self.block_tables[seq.seq_id].update(blocks)
 
             seq_physical_block_id_mapping = {
                 self.block_allocator.get_physical_block_id(
-                    Device.GPU, gpu_block_id):
-                self.block_allocator.get_physical_block_id(
-                    Device.CPU, cpu_block_id)
+                    Device.GPU, gpu_block_id
+                ): self.block_allocator.get_physical_block_id(Device.CPU, cpu_block_id)
                 for gpu_block_id, cpu_block_id in seq_swap_mapping.items()
             }
 
             physical_block_id_mapping.extend(
-                list(seq_physical_block_id_mapping.items()))
+                list(seq_physical_block_id_mapping.items())
+            )
 
         return physical_block_id_mapping
 
     def get_num_free_gpu_blocks(self) -> int:
-        return self.block_allocator.get_num_free_blocks(Device.GPU)
+        """Get the number of logically free GPU blocks, accounting for Ultimate policy reservations."""
+        return self._get_logical_free_gpu_blocks()
 
     def get_num_free_cpu_blocks(self) -> int:
         return self.block_allocator.get_num_free_blocks(Device.CPU)
@@ -450,24 +565,29 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
     def get_prefix_cache_hit_rate(self, device: Device) -> float:
         return self.block_allocator.get_prefix_cache_hit_rate(device)
 
-    def _can_swap(self,
-                  seq_group: SequenceGroup,
-                  device: Device,
-                  status: SequenceStatus,
-                  num_lookahead_slots: int = 0) -> AllocStatus:
-        """Returns the AllocStatus for swapping in/out the given sequence_group 
+    def reset_prefix_cache(self, device: Optional[Device] = None) -> bool:
+        return self.block_allocator.reset_prefix_cache(device)
+
+    def _can_swap(
+        self,
+        seq_group: SequenceGroup,
+        device: Device,
+        status: SequenceStatus,
+        num_lookahead_slots: int = 0,
+    ) -> AllocStatus:
+        """Returns the AllocStatus for swapping in/out the given sequence_group
         on to the 'device'.
 
         Args:
-            sequence_group (SequenceGroup): The sequence group to swap in.
+            seq_group (SequenceGroup): The sequence group to swap in/out.
             device (Device): device to swap the 'seq_group' on.
             status (SequenceStatus): The status of sequence which is needed
                 for action. RUNNING for swap out and SWAPPED for swap in
-            num_lookahead_slots (int): Number of lookahead slots used in 
+            num_lookahead_slots (int): Number of lookahead slots used in
                 speculative decoding, default to 0.
 
         Returns:
-            AllocStatus: The AllocStatus for swapping in/out the given 
+            AllocStatus: The AllocStatus for swapping in/out the given
                 sequence_group on to the 'device'.
         """
         # First determine the number of blocks that will be touched by this
@@ -481,25 +601,39 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
                 # Compute the number blocks to touch for the tokens to be
                 # appended. This does NOT include the full blocks that need
                 # to be touched for the swap.
-                num_blocks_touched += \
+                num_blocks_touched += (
                     block_table.get_num_blocks_touched_by_append_slots(
                         block_table.get_unseen_token_ids(seq.get_token_ids()),
-                        num_lookahead_slots=num_lookahead_slots)
+                        num_lookahead_slots=num_lookahead_slots,
+                    )
+                )
                 blocks.extend(block_table.blocks)
         # Compute the number of full blocks to touch and add it to the
         # existing count of blocks to touch.
         num_blocks_touched += self.block_allocator.get_num_full_blocks_touched(
-            blocks, device=device)
+            blocks, device=device
+        )
 
         watermark_blocks = 0
         if device == Device.GPU:
             watermark_blocks = self.watermark_blocks
 
-        if self.block_allocator.get_num_total_blocks(
-                device) < num_blocks_touched:
+        if self.block_allocator.get_num_total_blocks(device) < num_blocks_touched:
             return AllocStatus.NEVER
-        elif self.block_allocator.get_num_free_blocks(
-                device) - num_blocks_touched >= watermark_blocks:
+
+        # For Ultimate policy, use logical free blocks when swapping to GPU
+        if device == Device.GPU and self.enable_ultimate_policy:
+            num_free_blocks = self._get_logical_free_gpu_blocks()
+        else:
+            num_free_blocks = self.block_allocator.get_num_free_blocks(device)
+
+        if num_free_blocks - num_blocks_touched >= watermark_blocks:
             return AllocStatus.OK
         else:
             return AllocStatus.LATER
+
+    def get_num_cached_tokens(self, seq: Sequence) -> int:
+        """Get the number of tokens in blocks that are already computed and
+        cached in the block manager for the sequence.
+        """
+        return self._computed_blocks_tracker.get_num_cached_tokens(seq)
