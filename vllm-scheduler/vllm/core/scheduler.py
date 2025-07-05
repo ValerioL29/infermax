@@ -321,6 +321,22 @@ class PrecomputedSchedule(Singleton):
 
     # Add other methods as needed
 
+class StepTracker(Singleton):
+    """Tracks the state of requests across steps."""
+    step: int = 0
+    
+    def __init__(self):
+        pass
+
+    def set_step(self, step: int):
+        self.step = step
+
+    def get_current_step(self) -> int:
+        return self.step
+
+    def update_step(self):
+        self.step += 1
+
 class Scheduler:
 
     def __init__(

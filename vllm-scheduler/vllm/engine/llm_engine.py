@@ -19,7 +19,7 @@ from vllm.config import (CacheConfig, DecodingConfig, DeviceConfig,
                          PromptAdapterConfig, SchedulerConfig,
                          SpeculativeConfig)
 from vllm.core.scheduler import (ScheduledSequenceGroup, Scheduler,
-                                 SchedulerOutputs, PrecomputedSchedule)
+                                 SchedulerOutputs, PrecomputedSchedule, StepTracker)
 from vllm.engine.arg_utils import EngineArgs
 from vllm.engine.metrics_types import StatLoggerBase, Stats
 from vllm.engine.output_processor.interfaces import (
@@ -482,6 +482,9 @@ class LLMEngine:
 
         # Precomputed schedule metrics
         self.precomputed_schedule = PrecomputedSchedule()
+
+        # Step tracker
+        self.step_tracker = StepTracker()
 
     def _initialize_kv_caches(self) -> None:
         """Initialize the KV cache in the worker(s).
@@ -1475,8 +1478,9 @@ class LLMEngine:
             )
             model_execution_time = time.perf_counter() - start_time
 
-            self.precomputed_schedule.model_execution_time.append(model_execution_time)
-            self.precomputed_schedule.gpu_cache_usage.append(
+            current_step = self.step_tracker.get_current_step()
+            self.precomputed_schedule.model_execution_time[current_step] = model_execution_time
+            self.precomputed_schedule.gpu_cache_usage[current_step] = (
                 self.scheduler[virtual_engine].block_manager.num_total_gpu_blocks -
                 self.scheduler[virtual_engine].block_manager.get_num_free_gpu_blocks()
             )

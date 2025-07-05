@@ -10,12 +10,13 @@ import pandas as pd
 import torch
 from tqdm import tqdm
 
-from vllm import LLM, SamplingParams
-from vllm.core.scheduler import PrecomputedSchedule, Scheduler
+from vllm import ModelRegistry, LLM, SamplingParams
+from vllm.core.scheduler import PrecomputedSchedule, Scheduler, StepTracker
 from vllm.engine.arg_utils import EngineArgs
 from vllm.logger import init_logger
 from vllm.utils import FlexibleArgumentParser
 
+from custom_llama import DiasLlamaForCausalLM
 from engine_step_tracker import (
     track_request_changes_and_create_batch_schedule, 
     extract_scheduler_state, 
@@ -67,6 +68,9 @@ def run_vllm(
     engine_args: EngineArgs,
     use_srf_preemption: bool = False,
 ) -> tuple[float, float]:
+    # Register the custom model
+    ModelRegistry.register_model("LlamaForCausalLM", DiasLlamaForCausalLM)
+
     # Initialize the LLM engine
     llm = LLM(**asdict(engine_args))
 
@@ -104,11 +108,14 @@ def run_vllm(
         )
 
     # Create progress bar
-    step_count = 1
     processed_requests = 0
 
     # Initialize request tracker for state changes
     request_tracker: Dict[str, RequestStateTracker] = {}
+
+    # Step tracker
+    step_tracker = StepTracker()
+    step_tracker.set_step(0)
 
     # Progress bar
     pbar = tqdm(total=len(requests), desc="Processing requests")
@@ -118,6 +125,7 @@ def run_vllm(
 
     # Profile each step with real-time tracking and incremental saving
     while llm.llm_engine.has_unfinished_requests():
+        step_count = step_tracker.get_current_step()
         logger.info(f"\n--- Step {step_count} ---")
 
         # Get number of running sequences
@@ -183,7 +191,7 @@ def run_vllm(
         logger.info(f"Step {step_count} saved incrementally")
 
         # Update processed requests count
-        step_count += 1
+        step_tracker.update_step()
         processed_requests += num_finished_requests
         pbar.update(num_finished_requests)
 
@@ -212,11 +220,12 @@ def main(args: argparse.Namespace):
 
     # Metrics containers
     precomputed_schedule.all_reduce_time = [0]
-    precomputed_schedule.batch_start_time = []
-    precomputed_schedule.gpu_cache_usage = []
-    precomputed_schedule.model_execution_time = []
-    precomputed_schedule.model_forward_time = []
     precomputed_schedule.batch_info = []
+    precomputed_schedule.batch_start_time = []
+    precomputed_schedule.gpu_cache_usage = {}
+    precomputed_schedule.model_execution_time = {}
+    precomputed_schedule.model_forward_time = {}
+    precomputed_schedule.decoders_forward_time = {}
 
     # Parse the trace file
     # TODO: Remove top_n after testing
@@ -259,6 +268,7 @@ def main(args: argparse.Namespace):
         "cache_block_size": precomputed_schedule.cache_block_size,
         "num_total_gpu_cache": precomputed_schedule.num_total_gpu_cache,
         "batch_info": precomputed_schedule.batch_info,
+        "decoders_forward_time": precomputed_schedule.decoders_forward_time,
     }
 
     with open(args.output_file, "wb") as f:

@@ -58,7 +58,7 @@ from vllm.worker.model_runner_base import (
     _init_attn_metadata_from_tensor_dict,
     _init_sampling_metadata_from_tensor_dict, dump_input_when_exception)
 
-from vllm.core.scheduler import PrecomputedSchedule
+from vllm.core.scheduler import PrecomputedSchedule, StepTracker
 
 
 if TYPE_CHECKING:
@@ -1674,7 +1674,8 @@ class ModelRunner(GPUModelRunnerBase[ModelInputForGPUWithSamplingMetadata]):
             model_forward_end_m.record()
             model_forward_end_m.synchronize()
             try:
-                PrecomputedSchedule().model_forward_time.append(
+                current_step = StepTracker().get_current_step()
+                PrecomputedSchedule().model_forward_time[current_step] = (
                     model_forward_start_m.elapsed_time(
                     model_forward_end_m) / 1000
                 )

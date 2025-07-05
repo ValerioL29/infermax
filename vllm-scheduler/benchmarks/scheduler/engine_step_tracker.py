@@ -7,6 +7,7 @@ from vllm.logger import init_logger
 
 logger = init_logger(__name__)
 
+
 @dataclass
 class RequestStateTracker:
     """Tracks the state of requests across steps."""
