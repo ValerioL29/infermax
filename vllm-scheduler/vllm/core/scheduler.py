@@ -9,7 +9,8 @@ from typing import Sequence as GenericSequence
 from typing import Set, Tuple, Union
 
 from vllm.config import CacheConfig, LoRAConfig, SchedulerConfig
-from vllm.core.interfaces import AllocStatus, BlockSpaceManager
+from vllm.core.block_manager import SelfAttnBlockSpaceManager
+from vllm.core.interfaces import AllocStatus
 from vllm.logger import init_logger
 from vllm.lora.request import LoRARequest
 from vllm.prompt_adapter.request import PromptAdapterRequest
@@ -383,14 +384,14 @@ class Scheduler:
         # LoRAs. This should be improved in the future.
         self.lora_config = lora_config
 
-        version = "selfattn"
-        if (
-            self.scheduler_config.task == "embedding"
-            or self.cache_config.is_attention_free
-        ):
-            version = "placeholder"
+        # version = "selfattn"
+        # if (
+        #     self.scheduler_config.task == "embedding"
+        #     or self.cache_config.is_attention_free
+        # ):
+        #     version = "placeholder"
 
-        BlockSpaceManagerImpl = BlockSpaceManager.get_block_space_manager_class(version)
+        # We always use selfattn block space manager for now
 
         num_gpu_blocks = cache_config.num_gpu_blocks
         if num_gpu_blocks:
@@ -401,7 +402,7 @@ class Scheduler:
             num_cpu_blocks //= pipeline_parallel_size
 
         # Create the block space manager.
-        self.block_manager = BlockSpaceManagerImpl(
+        self.block_manager = SelfAttnBlockSpaceManager(
             block_size=self.cache_config.block_size,
             num_gpu_blocks=num_gpu_blocks,
             num_cpu_blocks=num_cpu_blocks,
@@ -525,6 +526,7 @@ class Scheduler:
 
     def set_use_ef_preemption(self, use_ef_preemption: bool) -> None:
         self.use_ef_preemption = use_ef_preemption
+        self.block_manager.enable_ultimate_policy = use_ef_preemption
         logger.info(f"Using EF preemption: {use_ef_preemption}")
 
     def set_use_infermax_schedule(self, use_infermax_schedule: bool) -> None:
@@ -833,6 +835,12 @@ class Scheduler:
                         victim_seq_group = running_queue.pop()
                     # Count preemption
                     self.preemption_count += 1
+
+                    if self.use_ef_preemption:
+                        raise RuntimeError(
+                            "When enabling eviction-free preemption, the scheduler"
+                            " should not preempt any sequences."
+                        )
                 else:
                     # No other sequence group can be preempted.
                     # Preempt the current sequence group.
@@ -1185,6 +1193,11 @@ class Scheduler:
                     vseq_group = running_queue.pop()
                 # Count preemption
                 self.preemption_count += 1
+                if self.use_ef_preemption:
+                    raise RuntimeError(
+                        "When enabling eviction-free preemption, the scheduler should"
+                        " not preempt any sequences."
+                    )
 
                 num_running_tokens = self._get_num_new_tokens(
                     vseq_group, SequenceStatus.RUNNING, False, budget

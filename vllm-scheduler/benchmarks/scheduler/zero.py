@@ -72,6 +72,7 @@ def run_vllm(
     requests: List[TraceRequest],
     engine_args: EngineArgs,
     use_srf_preemption: bool = False,
+    use_ef_preemption: bool = False,
 ) -> tuple[float, float]:
     # Register the custom model
     ModelRegistry.register_model("LlamaForCausalLM", DiasLlamaForCausalLM)
@@ -89,6 +90,8 @@ def run_vllm(
     scheduler: Scheduler = llm.llm_engine.scheduler[0]
     if use_srf_preemption:
         scheduler.set_use_srf_preemption(use_srf_preemption)
+    if use_ef_preemption:
+        scheduler.set_use_ef_preemption(use_ef_preemption)
 
     # Force disable infermax schedule
     scheduler.set_use_infermax_schedule(False)
@@ -251,13 +254,14 @@ def main(args: argparse.Namespace):
 
     # Parse the trace file
     # TODO: remove testing for zero-cpu-time scheduling
-    requests = parse_trace_file(args.trace_file)
+    requests = parse_trace_file(args.trace_file, top_n=args.top_n)
 
     # Run the VLLM engine
     elapsed_time, preemption_count = run_vllm(
         requests,
         EngineArgs.from_cli_args(args),
         use_srf_preemption=args.use_srf_preemption,
+        use_ef_preemption=args.use_ef_preemption,
     )
 
     total_num_tokens = sum(
@@ -305,10 +309,22 @@ if __name__ == "__main__":
         help="Path to the trace file.",
     )
     parser.add_argument(
+        "--top-n",
+        type=int,
+        default=-1,
+        help="Number of requests to process.",
+    )
+    parser.add_argument(
         "--use-srf-preemption",
         action="store_true",
         default=False,
         help="Use SRF preemption.",
+    )
+    parser.add_argument(
+        "--use-ef-preemption",
+        action="store_true",
+        default=False,
+        help="Use EF preemption.",
     )
     parser.add_argument(
         "--output-file",
