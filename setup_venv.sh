@@ -7,9 +7,12 @@ source .venv/bin/activate && \
 # Upgrade pip
 pip install --upgrade pip && \
 # Install vllm
-pip install vllm==0.6.4 && \
+pip install torch==2.4.1 torchvision==0.19.1 && \
 # Install vllm-scheduler building dependencies
 pip install -r vllm-scheduler/requirements-build.txt && \
+# Fix nvToolsExt cmake issue
+rm .venv/lib/python3.12/site-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
+cp cuda.cmake .venv/lib/python3.12/site-packages/torch/share/cmake/Caffe2/public/cuda.cmake && \
 # Move to vllm-scheduler directory
 cd vllm-scheduler && \
 # Use existing pytorch

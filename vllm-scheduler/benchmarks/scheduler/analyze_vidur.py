@@ -4,7 +4,6 @@ import pickle
 from pathlib import Path
 
 import numpy as np
-from rich import print
 from rich.progress import track
 
 
