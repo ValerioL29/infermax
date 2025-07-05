@@ -228,8 +228,7 @@ def main(args: argparse.Namespace):
     precomputed_schedule.decoders_forward_time = {}
 
     # Parse the trace file
-    # TODO: Remove top_n after testing
-    requests = parse_trace_file(args.trace_file, top_n=100)
+    requests = parse_trace_file(args.trace_file)
 
     # Run the VLLM engine
     elapsed_time, preemption_count = run_vllm(
