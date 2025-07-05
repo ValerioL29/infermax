@@ -36,8 +36,6 @@ class BatchInfo:
     num_finished_requests: int
 
     # Request details
-    running_requests: List[Dict[str, Any]]
-    waiting_requests: List[Dict[str, Any]]
     finished_request_ids: List[str]
 
     # Batch schedule information - updated format
@@ -63,6 +61,25 @@ class BatchInfo:
     # Total preemption count
     acc_preemption_count: int
 
+    @classmethod
+    def get_batch_info_keys(cls) -> List[str]:
+        return [
+            "step_id",
+            "timestamp",
+            "duration",
+            "stage",
+            "num_running_requests",
+            "num_waiting_requests",
+            "num_finished_requests",
+            "finished_request_ids",
+            "batch_schedule",
+            "batch_size",
+            "total_kv_cache_tokens",
+            "total_processed_tokens",
+            "preemption_in_step",
+            "acc_preemption_count",
+        ]
+
 
 def extract_scheduler_state(scheduler: Scheduler) -> Dict[str, Any]:
     """Extract current state from vLLM engine scheduler."""
@@ -81,37 +98,33 @@ def extract_scheduler_state(scheduler: Scheduler) -> Dict[str, Any]:
         total_tokens = num_tokens
         num_prefill_tokens = seq.get_num_prefill_tokens()
         num_decode_tokens = seq.get_num_decode_tokens()
-        running_requests.append(
-            {
-                "request_id": seq_group.request_id,
-                "num_computed_tokens": num_computed_tokens,
-                "num_tokens": num_tokens,
-                "remaining_tokens": remaining_tokens,
-                "total_tokens": total_tokens,
-                "status": str(seq.status),
-                "arrival_time": getattr(seq_group, "arrival_time", None),
-                "prompt_token_ids_len": len(seq.data.prompt_token_ids),
-                "output_token_ids_len": len(seq.data.output_token_ids),
-                "is_prefill": seq_group.is_prefill(),
-                "num_prefill_tokens": num_prefill_tokens,
-                "num_decode_tokens": num_decode_tokens,
-            }
-        )
+        running_requests.append({
+            "request_id": seq_group.request_id,
+            "num_computed_tokens": num_computed_tokens,
+            "num_tokens": num_tokens,
+            "remaining_tokens": remaining_tokens,
+            "total_tokens": total_tokens,
+            "status": str(seq.status),
+            "arrival_time": getattr(seq_group, "arrival_time", None),
+            "prompt_token_ids_len": len(seq.data.prompt_token_ids),
+            "output_token_ids_len": len(seq.data.output_token_ids),
+            "is_prefill": seq_group.is_prefill(),
+            "num_prefill_tokens": num_prefill_tokens,
+            "num_decode_tokens": num_decode_tokens,
+        })
 
     # Extract waiting requests information
     waiting_requests = []
     for seq_group in scheduler.waiting:
         # Get first sequence since we only have one sequence per request
         seq = seq_group.get_seqs(status=SequenceStatus.WAITING)[0]
-        waiting_requests.append(
-            {
-                "request_id": seq_group.request_id,
-                "num_tokens": seq.get_len(),
-                "status": str(seq.status),
-                "arrival_time": getattr(seq_group, "arrival_time", None),
-                "is_prefill": seq_group.is_prefill(),
-            }
-        )
+        waiting_requests.append({
+            "request_id": seq_group.request_id,
+            "num_tokens": seq.get_len(),
+            "status": str(seq.status),
+            "arrival_time": getattr(seq_group, "arrival_time", None),
+            "is_prefill": seq_group.is_prefill(),
+        })
 
     return {
         "running_requests": running_requests,
@@ -248,7 +261,9 @@ def track_request_changes_and_create_batch_schedule(
             # Remove from tracker since it's preempted
             del request_tracker[request_id]
             local_preemption_count += 1
-    logger.info(f"Local preemption count: {local_preemption_count} for step {step_count}")
+    logger.info(
+        f"Local preemption count: {local_preemption_count} for step {step_count}"
+    )
 
     # Process finished requests
     for request_id in scheduler_state["finished_req_ids"]:
@@ -280,11 +295,13 @@ def track_request_changes_and_create_batch_schedule(
         acc_preemption_count=acc_preemption_count,
     )
 
+
 def print_batch_info(batch_info: BatchInfo):
     """Print batch information in a formatted way."""
     logger.info(f"  Step {batch_info.step_id} ({batch_info.stage}):")
     logger.info(
-        f"    Running: {batch_info.num_running_requests}, Waiting: {batch_info.num_waiting_requests}"
+        f"    Running: {batch_info.num_running_requests}, Waiting:"
+        f" {batch_info.num_waiting_requests}"
     )
     logger.info(f"    Finished: {batch_info.num_finished_requests}")
     logger.info(f"    Batch schedule: {batch_info.batch_schedule}")

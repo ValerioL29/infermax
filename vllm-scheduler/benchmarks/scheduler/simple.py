@@ -1,4 +1,5 @@
 """Benchmark offline inference throughput."""
+
 import argparse
 import logging
 import pickle
@@ -18,10 +19,10 @@ from vllm.utils import FlexibleArgumentParser
 
 from custom_llama import DiasLlamaForCausalLM
 from engine_step_tracker import (
-    track_request_changes_and_create_batch_schedule, 
-    extract_scheduler_state, 
-    print_batch_info, 
-    RequestStateTracker, 
+    track_request_changes_and_create_batch_schedule,
+    extract_scheduler_state,
+    print_batch_info,
+    RequestStateTracker,
     BatchInfo,
 )
 
@@ -37,6 +38,7 @@ class TraceRequest:
     arrival_time: float
     num_prefill_tokens: int
     num_decode_tokens: int
+
 
 def parse_trace_file(csv_path: str, top_n: int = -1) -> List[TraceRequest]:
     """Parse the trace CSV file into TraceRequest objects."""
@@ -58,10 +60,12 @@ def parse_trace_file(csv_path: str, top_n: int = -1) -> List[TraceRequest]:
 
     logger.info(f"Loaded {len(trace_requests)} trace requests")
     logger.info(
-        f"Time span: {trace_requests[0].arrival_time:.2f}s to {trace_requests[-1].arrival_time:.2f}s"
+        f"Time span: {trace_requests[0].arrival_time:.2f}s to"
+        f" {trace_requests[-1].arrival_time:.2f}s"
     )
 
     return trace_requests
+
 
 def run_vllm(
     requests: List[TraceRequest],
@@ -84,7 +88,7 @@ def run_vllm(
     scheduler: Scheduler = llm.llm_engine.scheduler[0]
     if use_srf_preemption:
         scheduler.set_use_srf_preemption(use_srf_preemption)
-    
+
     # Force disable infermax schedule
     scheduler.set_use_infermax_schedule(False)
 
@@ -172,8 +176,6 @@ def run_vllm(
             num_running_requests=post_step_state["num_running"],
             num_waiting_requests=post_step_state["num_waiting"],
             num_finished_requests=num_finished_requests,
-            running_requests=post_step_state["running_requests"],
-            waiting_requests=post_step_state["waiting_requests"],
             finished_request_ids=post_step_state["finished_req_ids"],
             batch_schedule=batch_schedule,
             total_kv_cache_tokens=total_kv_cache_tokens,
@@ -199,7 +201,7 @@ def run_vllm(
         if not llm.llm_engine.has_unfinished_requests():
             logger.info("\nAll requests completed!")
             break
-    
+
     # Stop timer
     end = time.perf_counter()
 
@@ -238,16 +240,14 @@ def main(args: argparse.Namespace):
     )
 
     total_num_tokens = sum(
-        request.num_prefill_tokens + request.num_decode_tokens
-        for request in requests
+        request.num_prefill_tokens + request.num_decode_tokens for request in requests
     )
-    total_output_tokens = sum(
-        request.num_decode_tokens
-        for request in requests
-    )
+    total_output_tokens = sum(request.num_decode_tokens for request in requests)
 
     try:
-        precomputed_schedule.gpu_cache_usage.append(precomputed_schedule.num_total_gpu_cache)
+        precomputed_schedule.gpu_cache_usage.append(
+            precomputed_schedule.num_total_gpu_cache
+        )
     except:
         logger.error("Failed to get the number of total GPU cache")
 
@@ -272,6 +272,7 @@ def main(args: argparse.Namespace):
 
     with open(args.output_file, "wb") as f:
         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+
 
 if __name__ == "__main__":
     parser = FlexibleArgumentParser(description="Benchmark the throughput.")
