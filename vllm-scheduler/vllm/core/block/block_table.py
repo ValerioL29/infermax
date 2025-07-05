@@ -82,7 +82,6 @@ class BlockTable:
         self,
         token_ids: List[int],
         device: Device = Device.GPU,
-        extra_hash: Optional[int] = None,
     ) -> None:
         """Allocates memory blocks for storing the given sequence of token IDs.
 
@@ -93,14 +92,13 @@ class BlockTable:
             token_ids (List[int]): The sequence of token IDs to be stored.
             device (Device, optional): The device on which the blocks should be
                 allocated. Defaults to Device.GPU.
-            extra_hash (Optional[int]): The hash value of additional
-                factors, such as adapters, that influence the block hash
-                in the prefixcaching block.
         """
         assert not self._is_allocated
         assert token_ids
         blocks = self._allocate_blocks_for_token_ids(
-            prev_block=None, token_ids=token_ids, device=device, extra_hash=extra_hash
+            prev_block=None,
+            token_ids=token_ids,
+            device=device,
         )
         self.update(blocks)
         self._num_full_slots = len(token_ids)
@@ -116,7 +114,6 @@ class BlockTable:
         token_ids: List[int],
         num_lookahead_slots: int = 0,
         num_computed_slots: Optional[int] = None,
-        extra_hash: Optional[int] = None,
     ) -> None:
         """Appends a sequence of token IDs to the existing blocks in the
         BlockTable.
@@ -139,9 +136,6 @@ class BlockTable:
                 Without sliding window, None can be passed.
                 Without chunked prefill, it should be the same as
                 _num_full_slots.
-            extra_hash (Optional[int]): The hash value of additional
-                factors such as adapters that influence the block, apart
-                from the token_ids.
         """
         assert self._is_allocated, "no blocks have been allocated"
         assert len(self._blocks) > 0
@@ -162,7 +156,7 @@ class BlockTable:
         # Ensure there are enough empty slots for the new tokens plus
         # lookahead slots
         self.ensure_num_empty_slots(
-            num_empty_slots=len(token_ids) + num_lookahead_slots, extra_hash=extra_hash
+            num_empty_slots=len(token_ids) + num_lookahead_slots
         )
 
         # Update the blocks with the new tokens
@@ -174,9 +168,7 @@ class BlockTable:
 
         self._num_full_slots += len(token_ids)
 
-    def ensure_num_empty_slots(
-        self, num_empty_slots: int, extra_hash: Optional[int] = None
-    ) -> None:
+    def ensure_num_empty_slots(self, num_empty_slots: int) -> None:
         """Ensures that the BlockTable has at least the specified number of
         empty slots available.
 
@@ -187,9 +179,6 @@ class BlockTable:
 
         Args:
             num_empty_slots (int): The minimum number of empty slots required.
-            extra_hash (Optional[int]): The hash value of additional
-                factors such as adapters that influence the block, apart
-                from the token_ids.
         """
         # Currently the block table only supports
         # appending tokens to GPU blocks.
@@ -206,7 +195,8 @@ class BlockTable:
             assert len(self._blocks) > 0
             self._blocks.append(
                 self._allocator.allocate_mutable_block(
-                    prev_block=self._blocks[-1], device=device, extra_hash=extra_hash
+                    prev_block=self._blocks[-1],
+                    device=device,
                 )
             )
 
@@ -285,7 +275,6 @@ class BlockTable:
         prev_block: Optional[Block],
         token_ids: List[int],
         device: Device,
-        extra_hash: Optional[int] = None,
     ) -> List[Block]:
         blocks: List[Block] = []
 
@@ -303,7 +292,6 @@ class BlockTable:
                     prev_block,
                     block_token_ids=block_token_ids,
                     device=device,
-                    extra_hash=extra_hash,
                 )
             )
             prev_block = blocks[-1]
@@ -313,7 +301,7 @@ class BlockTable:
             cur_token_ids = tail_token_ids[0]
 
             block = self._allocator.allocate_mutable_block(
-                prev_block=prev_block, device=device, extra_hash=extra_hash
+                prev_block=prev_block, device=device
             )
             block.append_token_ids(cur_token_ids)
 

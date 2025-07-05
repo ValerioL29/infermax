@@ -233,7 +233,7 @@ def main(args: argparse.Namespace):
     precomputed_schedule.decoders_forward_time = {}
 
     # Parse the trace file
-    requests = parse_trace_file(args.trace_file)
+    requests = parse_trace_file(args.trace_file, top_n=args.top_n)
 
     # Run the VLLM engine
     elapsed_time, preemption_count = run_vllm(
@@ -286,6 +286,12 @@ if __name__ == "__main__":
         type=str,
         default="trace.csv",
         help="Path to the trace file.",
+    )
+    parser.add_argument(
+        "--top-n",
+        type=int,
+        default=-1,
+        help="Number of requests to process.",
     )
     parser.add_argument(
         "--use-srf-preemption",

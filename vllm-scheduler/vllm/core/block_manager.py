@@ -14,9 +14,8 @@ from vllm.core.block.prefix_caching_block import (
 from vllm.core.block.utils import check_no_caching_or_swa_for_blockmgr_encdec
 from vllm.core.interfaces import AllocStatus, BlockSpaceManager
 from vllm.logger import init_logger
+from vllm.sequence import Sequence, SequenceGroup, SequenceStatus
 from vllm.utils import Device
-
-from vcostlm.core.sequence import Sequence, SequenceGroup, SequenceStatus
 
 SeqId = int
 EncoderSeqId = str
@@ -109,9 +108,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_tables: Dict[SeqId, BlockTable] = {}
         self.cross_block_tables: Dict[EncoderSeqId, BlockTable] = {}
 
-        self._computed_blocks_tracker = ComputedBlocksTracker(
-            self.block_allocator, self.block_size, self.enable_caching
-        )
+        self._computed_blocks_tracker = ComputedBlocksTracker(self.block_allocator)
         self._last_access_blocks_tracker = LastAccessBlocksTracker(self.block_allocator)
 
         # Ultimate policy
@@ -257,9 +254,10 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         if seq_token_ids:
             # NOTE: If there are any factors affecting the block besides
             # token_ids, they should be added as input to extra_hash.
-            extra_hash = seq.extra_hash()
+            # Mute extra_hash as the current vllm implementation does not support it
+            # extra_hash = seq.extra_hash()
             # Add blocks to the block table only if the sequence is non empty.
-            block_table.allocate(token_ids=seq_token_ids, extra_hash=extra_hash)
+            block_table.allocate(token_ids=seq_token_ids)
 
         return block_table
 
@@ -277,6 +275,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
         self.block_tables[seq.seq_id] = block_table
 
         # Track seq
+        self._computed_blocks_tracker.add_seq(seq.seq_id)
         self._last_access_blocks_tracker.add_seq(seq.seq_id)
 
         # Assign the block table for each sequence.
@@ -284,6 +283,7 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             self.block_tables[seq.seq_id] = block_table.fork()
 
             # Track seq
+            self._computed_blocks_tracker.add_seq(seq.seq_id)
             self._last_access_blocks_tracker.add_seq(seq.seq_id)
 
         # Allocate cross-attention block table for encoder sequence
@@ -343,7 +343,6 @@ class SelfAttnBlockSpaceManager(BlockSpaceManager):
             token_ids=unseen_token_ids,
             num_lookahead_slots=num_lookahead_slots,
             num_computed_slots=seq.data.get_num_computed_tokens(),
-            extra_hash=seq.extra_hash(),
         )
         # Return any new copy-on-writes.
         new_cows = self.block_allocator.clear_copy_on_writes()

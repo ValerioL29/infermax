@@ -7,4 +7,6 @@ python vllm-scheduler/benchmarks/scheduler/zero.py \
     --max-num-batched-tokens 16384 \
     --max-num-seqs 8192 \
     --trace-file vidur/data/processed_traces/splitwise_conv.csv \
-    --output-file outputs/llama_3_70b_8192_16384_nrf_vllm_zero.pkl
+    --top-n 100 \
+    --use-ef-preemption \
+    --output-file outputs/llama_3_70b_8192_16384_ef_vllm_zero.pkl
