@@ -1,5 +1,6 @@
 """Benchmark offline inference throughput."""
 import argparse
+import logging
 import pickle
 import time
 from dataclasses import asdict, dataclass
@@ -23,6 +24,7 @@ from engine_step_tracker import (
     BatchInfo,
 )
 
+logging.basicConfig(level=logging.INFO)
 logger = init_logger(__name__)
 
 
@@ -64,7 +66,7 @@ def run_vllm(
     requests: List[TraceRequest],
     engine_args: EngineArgs,
     use_srf_preemption: bool = False,
-) -> float:
+) -> tuple[float, float]:
     # Initialize the LLM engine
     llm = LLM(**asdict(engine_args))
 
@@ -122,6 +124,9 @@ def run_vllm(
         num_running_seqs = len(scheduler.running)
         logger.info(f"Number of running sequences: {num_running_seqs}")
 
+        # Preemption count
+        prev_preemption_count = scheduler.preemption_count
+
         # Engine step for processing requests
         step_start_time = time.perf_counter()
         outputs: list[RequestOutput] = llm.llm_engine.step()
@@ -136,12 +141,18 @@ def run_vllm(
         post_step_state = extract_scheduler_state(scheduler)
 
         # Create batch schedule from scheduler state using new tracking logic
-        batch_schedule, total_kv_cache_tokens, total_processed_tokens = track_request_changes_and_create_batch_schedule(
+        track_result = track_request_changes_and_create_batch_schedule(
             post_step_state,
             step_count,
+            prev_preemption_count,
             request_tracker,
             engine_args.enable_chunked_prefill,
         )
+        batch_schedule = track_result["batch_schedule"]
+        total_kv_cache_tokens = track_result["total_kv_cache_tokens"]
+        total_processed_tokens = track_result["total_processed_tokens"]
+        preemption_in_step = track_result["preemption_in_step"]
+        acc_preemption_count = track_result["acc_preemption_count"]
 
         # Create batch info
         batch_info = BatchInfo(
@@ -159,6 +170,8 @@ def run_vllm(
             batch_schedule=batch_schedule,
             total_kv_cache_tokens=total_kv_cache_tokens,
             total_processed_tokens=total_processed_tokens,
+            preemption_in_step=preemption_in_step,
+            acc_preemption_count=acc_preemption_count,
         )
 
         # Update the precomputed schedule
@@ -187,7 +200,7 @@ def run_vllm(
 
     pbar.close()
 
-    return end - start
+    return end - start, scheduler.preemption_count
 
 
 def main(args: argparse.Namespace):
@@ -210,7 +223,7 @@ def main(args: argparse.Namespace):
     requests = parse_trace_file(args.trace_file, top_n=100)
 
     # Run the VLLM engine
-    elapsed_time = run_vllm(
+    elapsed_time, preemption_count = run_vllm(
         requests,
         EngineArgs.from_cli_args(args),
         use_srf_preemption=args.use_srf_preemption,
@@ -233,6 +246,7 @@ def main(args: argparse.Namespace):
     results = {
         "elapsed_time": elapsed_time,
         "num_requests": len(requests),
+        "total_preemption_count": preemption_count,
         "total_num_tokens": total_num_tokens,
         "requests_per_second": len(requests) / elapsed_time,
         "tokens_per_second": total_num_tokens / elapsed_time,

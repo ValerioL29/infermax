@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Literal
 
 from vllm.core.scheduler import Scheduler
 from vllm.sequence import SequenceStatus
@@ -15,8 +15,9 @@ class RequestStateTracker:
     last_computed_tokens: int
     last_output_tokens: int
     last_prompt_tokens: int
-    is_prefill: bool
+    phase: Literal["PREFILL", "DECODE"]
     step_added: int  # Step when first added to running
+    preempted: bool = False
 
 
 @dataclass
@@ -43,7 +44,8 @@ class BatchInfo:
     # - c = # tokens to process (1 for decode, num_tokens for prefill)
     # - m = # KVs to read (num_computed_tokens for decode, 0 for prefill)
     # - phase = "PREFILL" or "DECODE"
-    batch_schedule: List[Tuple[str, int, int, str]]
+    # - preempted = True if the request is preempted
+    batch_schedule: List[Tuple[str, int, int, str, bool]]
 
     # Batch size for this step
     batch_size: int
@@ -53,6 +55,12 @@ class BatchInfo:
 
     # Total number of processed tokens
     total_processed_tokens: int
+
+    # Preemption in this step
+    preemption_in_step: int
+
+    # Total preemption count
+    acc_preemption_count: int
 
 
 def extract_scheduler_state(scheduler: Scheduler) -> Dict[str, Any]:
@@ -110,15 +118,17 @@ def extract_scheduler_state(scheduler: Scheduler) -> Dict[str, Any]:
         "num_running": len(scheduler.running),
         "num_waiting": len(scheduler.waiting),
         "finished_req_ids": scheduler._finished_requests_ids,
+        "preemption_count": scheduler.preemption_count,
     }
 
 
 def track_request_changes_and_create_batch_schedule(
     scheduler_state: Dict[str, Any],
     step_count: int,
+    prev_preemption_count: int,
     request_tracker: Dict[str, RequestStateTracker],
     enable_chunked_prefill: bool = False,
-) -> Tuple[List[Tuple[str, int, int, str]], int, int]:
+) -> Dict[str, Any]:
     """Track request changes and create batch schedule based on state changes.
 
     Returns:
@@ -137,6 +147,10 @@ def track_request_changes_and_create_batch_schedule(
 
     # Total number of output tokens
     total_processed_tokens = 0
+
+    # Update preemption count
+    preemption_in_step = scheduler_state["preemption_count"] - prev_preemption_count
+    acc_preemption_count = scheduler_state["preemption_count"]
 
     # Process running requests
     for req_info in scheduler_state["running_requests"]:
@@ -175,11 +189,11 @@ def track_request_changes_and_create_batch_schedule(
                 last_computed_tokens=num_computed_tokens,
                 last_output_tokens=output_token_ids_len,
                 last_prompt_tokens=prompt_token_ids_len,
-                is_prefill=True,
+                phase=phase,
                 step_added=step_count,
             )
 
-            batch_schedule.append((request_id, c, m, phase))
+            batch_schedule.append((request_id, c, m, phase, False))
             total_kv_cache_tokens += m
             total_processed_tokens += c
         else:
@@ -199,12 +213,12 @@ def track_request_changes_and_create_batch_schedule(
                 m = tracker.last_computed_tokens
                 phase = "PREFILL"
                 if c > 0:
-                    batch_schedule.append((request_id, c, m, phase))
+                    batch_schedule.append((request_id, c, m, phase, False))
                     total_kv_cache_tokens += m
                     total_processed_tokens += c
                 tracker.last_computed_tokens = num_computed_tokens
                 tracker.last_output_tokens = output_token_ids_len
-                tracker.is_prefill = True
+                tracker.phase = phase
                 request_tracker[request_id] = tracker
             else:
                 # This is a decode step
@@ -212,11 +226,28 @@ def track_request_changes_and_create_batch_schedule(
                 c = 1
                 m = num_computed_tokens
                 phase = "DECODE"
-                batch_schedule.append((request_id, c, m, phase))
+                batch_schedule.append((request_id, c, m, phase, False))
                 total_kv_cache_tokens += m
                 total_processed_tokens += c
                 tracker.last_computed_tokens = num_computed_tokens
                 tracker.last_output_tokens = output_token_ids_len
+                tracker.phase = phase
+
+    # Waiting request to check if they are preempted
+    local_preemption_count = 0
+    for req_info in scheduler_state["waiting_requests"]:
+        request_id = req_info["request_id"]
+        if request_id in request_tracker:
+            tracker = request_tracker[request_id]
+            tracker.preempted = True
+            c = 0
+            m = tracker.last_computed_tokens
+            phase = tracker.phase
+            batch_schedule.append((request_id, c, m, phase, tracker.preempted))
+            # Remove from tracker since it's preempted
+            del request_tracker[request_id]
+            local_preemption_count += 1
+    logger.info(f"Local preemption count: {local_preemption_count} for step {step_count}")
 
     # Process finished requests
     for request_id in scheduler_state["finished_req_ids"]:
@@ -229,7 +260,7 @@ def track_request_changes_and_create_batch_schedule(
             )  # read all computed tokens + 1 for final token
             phase = "DECODE"
 
-            batch_schedule.append((request_id, c, m, phase))
+            batch_schedule.append((request_id, c, m, phase, False))
             total_kv_cache_tokens += m
             total_processed_tokens += c
             # Remove from tracker since it's finished
@@ -240,7 +271,13 @@ def track_request_changes_and_create_batch_schedule(
     for request_id in finished_ids:
         del request_tracker[request_id]
 
-    return batch_schedule, total_kv_cache_tokens, total_processed_tokens
+    return dict(
+        batch_schedule=batch_schedule,
+        total_kv_cache_tokens=total_kv_cache_tokens,
+        total_processed_tokens=total_processed_tokens,
+        preemption_in_step=preemption_in_step,
+        acc_preemption_count=acc_preemption_count,
+    )
 
 def print_batch_info(batch_info: BatchInfo):
     """Print batch information in a formatted way."""
